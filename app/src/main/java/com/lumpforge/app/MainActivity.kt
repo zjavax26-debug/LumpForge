@@ -203,6 +203,12 @@ private fun LumpForgeApp() {
         if (wad == null || lump == null || archive == null) {
             previewMessage = "Selecciona un recurso para intentar previsualizarlo."
         } else {
+            val selectedCategory = lumpCategory(archive.lumps, lump.index)
+            if (selectedCategory == "Definición de textura") {
+                previewMessage = "Este recurso contiene definiciones de texturas, no una imagen individual. La vista previa de texturas compuestas se incorporará en una etapa posterior."
+            } else if (selectedCategory == "Script") {
+                previewMessage = "Este recurso contiene datos de script y no es una imagen."
+            } else {
             previewMessage = "Preparando vista previa…"
             try {
                 val result = withContext(Dispatchers.IO) {
@@ -234,6 +240,7 @@ private fun LumpForgeApp() {
                 }
             } catch (error: Exception) {
                 previewMessage = error.localizedMessage ?: "No se pudo generar la vista previa."
+            }
             }
         }
     }
@@ -663,7 +670,9 @@ private fun lumpCategory(lumps: List<WadLump>, index: Int): String {
         "S_START", "SS_START", "S_END", "SS_END",
         "P_START", "PP_START", "P_END", "PP_END"
     )
-    if (name in markerNames) return "Marcador"
+    if (name in markerNames || name.matches(Regex("[PFS][0-9]_(START|END)"))) {
+        return "Marcador"
+    }
 
     var section: String? = null
     for (i in 0 until index) {
@@ -682,8 +691,9 @@ private fun lumpCategory(lumps: List<WadLump>, index: Int): String {
         name.matches(Regex("E[1-4]M[1-9][0-9]?")) ||
             name.matches(Regex("MAP[0-9]{2}")) -> "Mapa"
         name in setOf("THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES",
-            "SEGS", "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP",
-            "BEHAVIOR", "SCRIPTS") -> "Datos de mapa"
+            "SEGS", "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP") -> "Datos de mapa"
+        name in setOf("BEHAVIOR", "SCRIPTS", "SCRIPT") ||
+            name.endsWith(".ACS") -> "Script"
         name.startsWith("DS") -> "Sonido"
         name.startsWith("D_") -> "Música"
         name.startsWith("PLAY") || name.startsWith("TROO") ||
