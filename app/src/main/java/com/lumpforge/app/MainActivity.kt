@@ -206,13 +206,20 @@ private fun LumpForgeApp() {
             previewMessage = "Preparando vista previa…"
             try {
                 val result = withContext(Dispatchers.IO) {
-                    val paletteLump = archive.lumps.firstOrNull {
-                        it.name.equals("PLAYPAL", ignoreCase = true)
-                    } ?: throw IllegalStateException("Este WAD no contiene PLAYPAL.")
                     if (lump.size !in 8L..(8L * 1024L * 1024L)) {
                         throw IllegalArgumentException("El recurso está vacío o supera el límite de vista previa.")
                     }
-                    val palette = readWadBytes(context, wad, paletteLump.offset, 768)
+                    val paletteLump = archive.lumps.firstOrNull {
+                        it.name.equals("PLAYPAL", ignoreCase = true)
+                    }
+                    val palette = if (paletteLump != null && paletteLump.size >= 768L) {
+                        readWadBytes(context, wad, paletteLump.offset, 768)
+                    } else {
+                        cachedDoomPalette
+                            ?: throw IllegalStateException(
+                                "Este WAD no contiene PLAYPAL. Abre primero DOOM.WAD para cargar su paleta."
+                            )
+                    }
                     val bytes = readWadBytes(context, wad, lump.offset, lump.size.toInt())
                     WadGraphicDecoder.decodePatch(bytes, palette)
                         ?: throw IllegalArgumentException("Este recurso no parece ser una imagen tipo Doom patch compatible.")
