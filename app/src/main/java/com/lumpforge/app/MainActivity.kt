@@ -486,7 +486,8 @@ private fun WadContents(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text(lumpGlyph(lump.name))
+                        val category = lumpCategory(lumps, lump.index)
+                        Text(lumpGlyph(category))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 lump.name.ifBlank { "(sin nombre)" },
@@ -494,7 +495,7 @@ private fun WadContents(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                "${lumpCategory(lump.name)} · #${lump.index + 1}",
+                                "${category} · #${lump.index + 1}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -521,7 +522,7 @@ private fun WadContents(
                 ) {
                     Text("Recurso seleccionado", fontWeight = FontWeight.SemiBold)
                     Text(lump.name.ifBlank { "(sin nombre)" })
-                    Text("Índice: ${lump.index} · ${lumpCategory(lump.name)}")
+                    Text("Índice: ${lump.index} · ${lumpCategory(lumps, lump.index)}")
                     Text("Offset: ${lump.offset} bytes")
                     Text("Tamaño: ${formatSize(lump.size)}")
                     Text(
@@ -655,32 +656,50 @@ private fun readWadBytes(
     }
 }
 
-private fun lumpCategory(name: String): String {
-    val upper = name.uppercase(Locale.ROOT)
+private fun lumpCategory(lumps: List<WadLump>, index: Int): String {
+    val name = lumps.getOrNull(index)?.name.orEmpty().uppercase(Locale.ROOT)
+    val markerNames = setOf(
+        "F_START", "FF_START", "F_END", "FF_END",
+        "S_START", "SS_START", "S_END", "SS_END",
+        "P_START", "PP_START", "P_END", "PP_END"
+    )
+    if (name in markerNames) return "Marcador"
+
+    var section: String? = null
+    for (i in 0 until index) {
+        when (lumps[i].name.uppercase(Locale.ROOT)) {
+            "S_START", "SS_START" -> section = "Gráfico / sprite"
+            "S_END", "SS_END" -> if (section == "Gráfico / sprite") section = null
+            "F_START", "FF_START" -> section = "Textura de piso"
+            "F_END", "FF_END" -> if (section == "Textura de piso") section = null
+            "P_START", "PP_START" -> section = "Parche gráfico"
+            "P_END", "PP_END" -> if (section == "Parche gráfico") section = null
+        }
+    }
+    if (section != null) return section
+
     return when {
-        upper in setOf("F_START", "FF_START", "F_END", "FF_END",
-            "S_START", "SS_START", "S_END", "SS_END",
-            "P_START", "PP_START", "P_END", "PP_END") -> "Marcador"
-        upper.matches(Regex("E[1-4]M[1-9][0-9]?")) ||
-            upper.matches(Regex("MAP[0-9]{2}")) -> "Mapa"
-        upper.startsWith("PLAY") || upper.startsWith("TROO") ||
-            upper.startsWith("SARG") || upper.startsWith("POSS") -> "Gráfico / sprite"
-        upper.startsWith("DS") -> "Sonido"
-        upper.startsWith("D_") -> "Música"
-        upper.startsWith("THINGS") || upper.startsWith("LINEDEFS") ||
-            upper.startsWith("SIDEDEFS") || upper.startsWith("VERTEXES") ||
-            upper.startsWith("SECTORS") || upper.startsWith("NODES") ||
-            upper.startsWith("SEGS") || upper.startsWith("SSECTORS") -> "Datos de mapa"
+        name.matches(Regex("E[1-4]M[1-9][0-9]?")) ||
+            name.matches(Regex("MAP[0-9]{2}")) -> "Mapa"
+        name in setOf("THINGS", "LINEDEFS", "SIDEDEFS", "VERTEXES",
+            "SEGS", "SSECTORS", "NODES", "SECTORS", "REJECT", "BLOCKMAP",
+            "BEHAVIOR", "SCRIPTS") -> "Datos de mapa"
+        name.startsWith("DS") -> "Sonido"
+        name.startsWith("D_") -> "Música"
+        name.startsWith("PLAY") || name.startsWith("TROO") ||
+            name.startsWith("SARG") || name.startsWith("POSS") -> "Gráfico / sprite"
+        name == "PNAMES" || name.startsWith("TEXTURE") -> "Definición de textura"
         else -> "Recurso"
     }
 }
 
-private fun lumpGlyph(name: String): String {
-    return when (lumpCategory(name)) {
+private fun lumpGlyph(category: String): String {
+    return when (category) {
         "Mapa", "Datos de mapa" -> "🗺️"
-        "Gráfico / sprite" -> "🖼️"
+        "Gráfico / sprite", "Textura de piso", "Parche gráfico" -> "🖼️"
         "Sonido", "Música" -> "🔊"
         "Marcador" -> "📌"
+        "Definición de textura" -> "🎨"
         else -> "📦"
     }
 }
