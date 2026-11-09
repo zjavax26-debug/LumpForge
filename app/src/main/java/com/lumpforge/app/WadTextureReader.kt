@@ -19,7 +19,13 @@ data class WadTextureDefinition(
 
 data class WadTextureRenderResult(
     val bitmap: Bitmap,
-    val missingPatches: List<String>
+    val missingPatches: List<String>,
+    val unsupportedPatches: List<String>
+)
+
+data class WadPatchResolution(
+    val bitmap: Bitmap? = null,
+    val found: Boolean = true
 )
 
 /**
@@ -122,15 +128,19 @@ object WadTextureReader {
 
     fun render(
         texture: WadTextureDefinition,
-        resolvePatch: (String) -> Bitmap?
+        resolvePatch: (String) -> WadPatchResolution
     ): WadTextureRenderResult {
         val pixels = IntArray(texture.width * texture.height) { Color.TRANSPARENT }
         val missing = linkedSetOf<String>()
+        val unsupported = linkedSetOf<String>()
 
         texture.patches.forEach { placement ->
-            val patch = resolvePatch(placement.name)
-            if (patch == null) {
+            val resolution = resolvePatch(placement.name)
+            val patch = resolution.bitmap
+            if (!resolution.found) {
                 missing += placement.name
+            } else if (patch == null) {
+                unsupported += placement.name
             } else {
                 val sourcePixels = IntArray(patch.width * patch.height)
                 patch.getPixels(sourcePixels, 0, patch.width, 0, 0, patch.width, patch.height)
@@ -158,7 +168,7 @@ object WadTextureReader {
             texture.height,
             Bitmap.Config.ARGB_8888
         )
-        return WadTextureRenderResult(bitmap, missing.toList())
+        return WadTextureRenderResult(bitmap, missing.toList(), unsupported.toList())
     }
 
     private fun fixedName(data: ByteArray, start: Int, length: Int): String {
