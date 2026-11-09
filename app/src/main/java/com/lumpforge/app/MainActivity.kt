@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -75,6 +76,8 @@ private data class BrowserEntry(
     val mimeType: String?
 )
 
+private data class WadLumpSource(val file: BrowserEntry, val lump: WadLump)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LumpForgeApp() {
@@ -90,6 +93,10 @@ private fun LumpForgeApp() {
     var previewMessage by remember { mutableStateOf("Selecciona un recurso para intentar previsualizarlo.") }
     var cachedDoomPalette by remember { mutableStateOf<ByteArray?>(null) }
     var cachedPaletteSource by remember { mutableStateOf<String?>(null) }
+    var cachedBaseWadEntry by remember { mutableStateOf<BrowserEntry?>(null) }
+    var cachedBaseWadArchive by remember { mutableStateOf<WadArchive?>(null) }
+    var wadTextures by remember { mutableStateOf<List<WadTextureDefinition>>(emptyList()) }
+    var selectedTexture by remember { mutableStateOf<WadTextureDefinition?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
 
@@ -172,10 +179,16 @@ private fun LumpForgeApp() {
                 input.use { WadReader.read(it, wad.size) }
             }
             wadArchive = parsed
-            val paletteLump = parsed.lumps.firstOrNull {
+            if (parsed.format == "IWAD") {
+                cachedBaseWadEntry = wad
+                cachedBaseWadArchive = parsed
+            }
+            val paletteLump = parsed.lumps.lastOrNull {
                 it.name.equals("PLAYPAL", ignoreCase = true)
             }
-            if (paletteLump != null && paletteLump.size >= 768L) {
+            if (paletteLump != null && paletteLump.size >= 768L &&
+                (parsed.format == "IWAD" || cachedDoomPalette == null)
+            ) {
                 val palette = withContext(Dispatchers.IO) {
                     readWadBytes(context, wad, paletteLump.offset, 768)
                 }
@@ -192,8 +205,11 @@ private fun LumpForgeApp() {
     LaunchedEffect(
         openedWad?.document?.uri,
         selectedLump?.index,
+        selectedTexture?.name,
+        selectedTexture?.sourceLump,
         wadArchive?.lumps?.size,
-        cachedPaletteSource
+        cachedPaletteSource,
+        cachedBaseWadArchive?.lumps?.size
     ) {
         val wad = openedWad
         val lump = selectedLump
@@ -202,45 +218,185 @@ private fun LumpForgeApp() {
 
         if (wad == null || lump == null || archive == null) {
             previewMessage = "Selecciona un recurso para intentar previsualizarlo."
+            wadTextures = emptyList()
+            selectedTexture = null
         } else {
-            val selectedCategory = lumpCategory(archive.lumps, lump.index)
-            if (selectedCategory == "Definición de textura") {
-                previewMessage = "Este recurso contiene definiciones de texturas, no una imagen individual. La vista previa de texturas compuestas se incorporará en una etapa posterior."
-            } else if (selectedCategory == "Script") {
+            val category = lumpCategory(archive.lumps, lump.index)
+            val isTextureTable = lump.name.equals("TEXTURE1", true) ||
+                lump.name.equals("TEXTURE2", true)
+
+            if (category == "Definición de textura" && isTextureTable) {
+                if (selectedTexture == null) {
+                    previewMessage = "Leyendo PNAMES y definiciones de texturas…"
+                    try {
+                        val definitions = withContext(Dispatchers.IO) {
+                            val pnamesSource = archive.lumps.lastOrNull {
+                                it.name.equals("PNAMES", true)
+                            }?.let { WadLumpSource(wad, it) } ?: run {
+                                val baseFile = cachedBaseWadEntry
+                                val baseLump = cachedBaseWadArchive?.lumps?.lastOrNull {
+                                    it.name.equals("PNAMES", true)
+                                }
+                                if (baseFile != null && baseLump != null) {
+                                    WadLumpSource(baseFile, baseLump)
+                                } else null
+                            } ?: throw IllegalStateException(
+                                "No se encontró PNAMES en este WAD ni en el IWAD base."
+                            )
+
+                            require(pnamesSource.lump.size in 4L..(2L * 1024L * 1024L)) {
+                                "PNAMES está vacío o supera el límite de lectura."
+                            }
+                            val patchNames = WadTextureReader.parsePatchNames(
+                                readWadBytes(
+                                    context, pnamesSource.file, pnamesSource.lump.offset,
+                                    pnamesSource.lump.size.toInt()
+                                )
+                            )
+                            val textureLumps = archive.lumps.filter {
+                                it.name.equals("TEXTURE1", true) ||
+                                    it.name.equals("TEXTURE2", true)
+                            }
+                            buildList {
+                                textureLumps.forEach { textureLump ->
+                                    require(textureLump.size in 4L..(16L * 1024L * 1024L)) {
+                                        "${textureLump.name} supera el límite de lectura."
+                                    }
+                                    val data = readWadBytes(
+                                        context, wad, textureLump.offset,
+                                        textureLump.size.toInt()
+                                    )
+                                    addAll(
+                                        WadTextureReader.parseTextureLump(
+                                            data, patchNames, textureLump.name
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        wadTextures = definitions
+                        previewMessage = if (definitions.isEmpty()) {
+                            "No se encontraron definiciones de texturas."
+                        } else {
+                            "Se encontraron ${definitions.size} texturas. Pulsa «Elegir textura» para explorarlas."
+                        }
+                    } catch (error: Exception) {
+                        wadTextures = emptyList()
+                        previewMessage = error.localizedMessage
+                            ?: "No se pudieron leer las definiciones de texturas."
+                    }
+                } else {
+                    previewMessage = "Reconstruyendo textura…"
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            val ownPalette = archive.lumps.lastOrNull {
+                                it.name.equals("PLAYPAL", true)
+                            }
+                            val palette = if (ownPalette != null && ownPalette.size >= 768L) {
+                                readWadBytes(context, wad, ownPalette.offset, 768)
+                            } else {
+                                cachedDoomPalette ?: throw IllegalStateException(
+                                    "No hay una paleta cargada. Abre primero un IWAD como DOOM.WAD."
+                                )
+                            }
+                            val patchCache = HashMap<String, Bitmap?>()
+                            WadTextureReader.render(selectedTexture!!) { patchName ->
+                                if (patchCache.containsKey(patchName)) {
+                                    patchCache[patchName]
+                                } else {
+                                    val own = archive.lumps.lastOrNull {
+                                        it.name.equals(patchName, true)
+                                    }?.let { WadLumpSource(wad, it) }
+                                    val base = if (own == null) {
+                                        val baseFile = cachedBaseWadEntry
+                                        val baseLump = cachedBaseWadArchive?.lumps?.lastOrNull {
+                                            it.name.equals(patchName, true)
+                                        }
+                                        if (baseFile != null && baseLump != null) {
+                                            WadLumpSource(baseFile, baseLump)
+                                        } else null
+                                    } else null
+                                    val source = own ?: base
+                                    val decoded = if (source == null ||
+                                        source.lump.size !in 8L..(8L * 1024L * 1024L)
+                                    ) {
+                                        null
+                                    } else {
+                                        val bytes = readWadBytes(
+                                            context, source.file, source.lump.offset,
+                                            source.lump.size.toInt()
+                                        )
+                                        WadGraphicDecoder.decodePatch(bytes, palette)
+                                    }
+                                    patchCache[patchName] = decoded
+                                    decoded
+                                }
+                            }
+                            result
+                        }
+                        previewBitmap = result.bitmap
+                        previewMessage = buildString {
+                            append("Textura compuesta ${selectedTexture!!.width} × ${selectedTexture!!.height}.")
+                            if (result.missingPatches.isEmpty()) {
+                                append(" Todos los parches se encontraron.")
+                            } else {
+                                append(" Parches no encontrados: ")
+                                append(result.missingPatches.joinToString(", "))
+                                append(".")
+                            }
+                        }
+                    } catch (error: Exception) {
+                        previewMessage = error.localizedMessage
+                            ?: "No se pudo reconstruir la textura."
+                    }
+                }
+            } else if (category == "Definición de textura") {
+                wadTextures = emptyList()
+                selectedTexture = null
+                previewMessage = "Este recurso contiene datos de definición, no una imagen individual."
+            } else if (category == "Script") {
+                wadTextures = emptyList()
+                selectedTexture = null
                 previewMessage = "Este recurso contiene datos de script y no es una imagen."
             } else {
-            previewMessage = "Preparando vista previa…"
-            try {
-                val result = withContext(Dispatchers.IO) {
-                    if (lump.size !in 8L..(8L * 1024L * 1024L)) {
-                        throw IllegalArgumentException("El recurso está vacío o supera el límite de vista previa.")
-                    }
-                    val paletteLump = archive.lumps.firstOrNull {
-                        it.name.equals("PLAYPAL", ignoreCase = true)
-                    }
-                    val palette = if (paletteLump != null && paletteLump.size >= 768L) {
-                        readWadBytes(context, wad, paletteLump.offset, 768)
-                    } else {
-                        cachedDoomPalette
-                            ?: throw IllegalStateException(
+                wadTextures = emptyList()
+                selectedTexture = null
+                previewMessage = "Preparando vista previa…"
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        if (lump.size !in 8L..(8L * 1024L * 1024L)) {
+                            throw IllegalArgumentException(
+                                "El recurso está vacío o supera el límite de vista previa."
+                            )
+                        }
+                        val ownPalette = archive.lumps.lastOrNull {
+                            it.name.equals("PLAYPAL", true)
+                        }
+                        val palette = if (ownPalette != null && ownPalette.size >= 768L) {
+                            readWadBytes(context, wad, ownPalette.offset, 768)
+                        } else {
+                            cachedDoomPalette ?: throw IllegalStateException(
                                 "Este WAD no contiene PLAYPAL. Abre primero DOOM.WAD para cargar su paleta."
                             )
+                        }
+                        val bytes = readWadBytes(context, wad, lump.offset, lump.size.toInt())
+                        WadGraphicDecoder.decodePatch(bytes, palette)
+                            ?: throw IllegalArgumentException(
+                                "Este recurso no parece ser una imagen tipo Doom patch compatible."
+                            )
                     }
-                    val bytes = readWadBytes(context, wad, lump.offset, lump.size.toInt())
-                    WadGraphicDecoder.decodePatch(bytes, palette)
-                        ?: throw IllegalArgumentException("Este recurso no parece ser una imagen tipo Doom patch compatible.")
+                    previewBitmap = result
+                    previewMessage = if (
+                        archive.lumps.none { it.name.equals("PLAYPAL", true) }
+                    ) {
+                        "Vista previa con la paleta de ${cachedPaletteSource ?: "IWAD"}."
+                    } else {
+                        "Vista previa de imagen Doom."
+                    }
+                } catch (error: Exception) {
+                    previewMessage = error.localizedMessage
+                        ?: "No se pudo generar la vista previa."
                 }
-                previewBitmap = result
-                previewMessage = if (
-                    archive.lumps.none { it.name.equals("PLAYPAL", ignoreCase = true) }
-                ) {
-                    "Vista previa con la paleta de ${cachedPaletteSource ?: "IWAD"}."
-                } else {
-                    "Vista previa de imagen Doom."
-                }
-            } catch (error: Exception) {
-                previewMessage = error.localizedMessage ?: "No se pudo generar la vista previa."
-            }
             }
         }
     }
@@ -384,7 +540,14 @@ private fun LumpForgeApp() {
                         selectedLump = selectedLump,
                         previewBitmap = previewBitmap,
                         previewMessage = previewMessage,
-                        onSelect = { selectedLump = it }
+                        textures = wadTextures,
+                        selectedTexture = selectedTexture,
+                        onSelect = {
+                            selectedLump = it
+                            selectedTexture = null
+                            wadTextures = emptyList()
+                        },
+                        onSelectTexture = { selectedTexture = it }
                     )
                 }
 
@@ -465,7 +628,10 @@ private fun WadContents(
     selectedLump: WadLump?,
     previewBitmap: Bitmap?,
     previewMessage: String,
-    onSelect: (WadLump) -> Unit
+    textures: List<WadTextureDefinition>,
+    selectedTexture: WadTextureDefinition?,
+    onSelect: (WadLump) -> Unit,
+    onSelectTexture: (WadTextureDefinition) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
