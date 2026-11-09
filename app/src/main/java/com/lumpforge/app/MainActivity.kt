@@ -224,53 +224,70 @@ private fun LumpForgeApp() {
             selectedTexture = null
         } else {
             val category = lumpCategory(archive.lumps, lump.index)
-            val isTextureTable = lump.name.equals("TEXTURE1", true) ||
+            val isClassicTextureTable = lump.name.equals("TEXTURE1", true) ||
                 lump.name.equals("TEXTURE2", true)
+            val isTextTextureTable = lump.name.equals("TEXTURES", true)
 
-            if (category == "Definición de textura" && isTextureTable) {
+            if (category == "Definición de textura" &&
+                (isClassicTextureTable || isTextTextureTable)
+            ) {
                 if (selectedTexture == null) {
-                    previewMessage = "Leyendo PNAMES y definiciones de texturas…"
+                    previewMessage = if (isTextTextureTable) {
+                        "Leyendo definiciones de TEXTURES…"
+                    } else {
+                        "Leyendo PNAMES y definiciones de texturas…"
+                    }
                     try {
                         val definitions = withContext(Dispatchers.IO) {
-                            val pnamesSource = archive.lumps.lastOrNull {
-                                it.name.equals("PNAMES", true)
-                            }?.let { WadLumpSource(wad, it) } ?: loadedBaseWads
-                                .asReversed()
-                                .firstNotNullOfOrNull { base ->
-                                    base.archive.lumps.lastOrNull {
-                                        it.name.equals("PNAMES", true)
-                                    }?.let { WadLumpSource(base.file, it) }
-                                } ?: throw IllegalStateException(
-                                    "No se encontró PNAMES en el WAD abierto ni en los IWAD cargados."
+                            if (isTextTextureTable) {
+                                require(lump.size in 1L..(8L * 1024L * 1024L)) {
+                                    "TEXTURES está vacío o supera el límite de lectura."
+                                }
+                                val data = readWadBytes(
+                                    context, wad, lump.offset, lump.size.toInt()
                                 )
+                                WadTextTextureReader.parse(data, "TEXTURES")
+                            } else {
+                                val pnamesSource = archive.lumps.lastOrNull {
+                                    it.name.equals("PNAMES", true)
+                                }?.let { WadLumpSource(wad, it) } ?: loadedBaseWads
+                                    .asReversed()
+                                    .firstNotNullOfOrNull { base ->
+                                        base.archive.lumps.lastOrNull {
+                                            it.name.equals("PNAMES", true)
+                                        }?.let { WadLumpSource(base.file, it) }
+                                    } ?: throw IllegalStateException(
+                                        "No se encontró PNAMES en el WAD abierto ni en los IWAD cargados."
+                                    )
 
-                            require(pnamesSource.lump.size in 4L..(2L * 1024L * 1024L)) {
-                                "PNAMES está vacío o supera el límite de lectura."
-                            }
-                            val patchNames = WadTextureReader.parsePatchNames(
-                                readWadBytes(
-                                    context, pnamesSource.file, pnamesSource.lump.offset,
-                                    pnamesSource.lump.size.toInt()
+                                require(pnamesSource.lump.size in 4L..(2L * 1024L * 1024L)) {
+                                    "PNAMES está vacío o supera el límite de lectura."
+                                }
+                                val patchNames = WadTextureReader.parsePatchNames(
+                                    readWadBytes(
+                                        context, pnamesSource.file, pnamesSource.lump.offset,
+                                        pnamesSource.lump.size.toInt()
+                                    )
                                 )
-                            )
-                            val textureLumps = archive.lumps.filter {
-                                it.name.equals("TEXTURE1", true) ||
-                                    it.name.equals("TEXTURE2", true)
-                            }
-                            buildList {
-                                textureLumps.forEach { textureLump ->
-                                    require(textureLump.size in 4L..(16L * 1024L * 1024L)) {
-                                        "${textureLump.name} supera el límite de lectura."
-                                    }
-                                    val data = readWadBytes(
-                                        context, wad, textureLump.offset,
-                                        textureLump.size.toInt()
-                                    )
-                                    addAll(
-                                        WadTextureReader.parseTextureLump(
-                                            data, patchNames, textureLump.name
+                                val textureLumps = archive.lumps.filter {
+                                    it.name.equals("TEXTURE1", true) ||
+                                        it.name.equals("TEXTURE2", true)
+                                }
+                                buildList {
+                                    textureLumps.forEach { textureLump ->
+                                        require(textureLump.size in 4L..(16L * 1024L * 1024L)) {
+                                            "${textureLump.name} supera el límite de lectura."
+                                        }
+                                        val data = readWadBytes(
+                                            context, wad, textureLump.offset,
+                                            textureLump.size.toInt()
                                         )
-                                    )
+                                        addAll(
+                                            WadTextureReader.parseTextureLump(
+                                                data, patchNames, textureLump.name
+                                            )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -716,7 +733,8 @@ private fun WadContents(
                     Text("Offset: ${lump.offset} bytes")
                     Text("Tamaño: ${formatSize(lump.size)}")
                     if (lump.name.equals("TEXTURE1", true) ||
-                        lump.name.equals("TEXTURE2", true)
+                        lump.name.equals("TEXTURE2", true) ||
+                        lump.name.equals("TEXTURES", true)
                     ) {
                         if (selectedTexture != null) {
                             Text(
@@ -761,7 +779,7 @@ private fun WadContents(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        "${textures.size} definiciones encontradas en TEXTURE1/TEXTURE2.",
+                        "${textures.size} definiciones encontradas en ${if (selectedTexture?.sourceLump == "TEXTURES") "TEXTURES" else "TEXTURE1/TEXTURE2"}.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
