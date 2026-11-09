@@ -300,7 +300,7 @@ private fun LumpForgeApp() {
                                 )
                             }
                             val patchCache = HashMap<String, Bitmap?>()
-                            WadTextureReader.render(selectedTexture!!) { patchName ->
+                            val rendered = WadTextureReader.render(selectedTexture!!) { patchName ->
                                 if (patchCache.containsKey(patchName)) {
                                     patchCache[patchName]
                                 } else {
@@ -332,7 +332,7 @@ private fun LumpForgeApp() {
                                     decoded
                                 }
                             }
-                            result
+                            rendered
                         }
                         previewBitmap = result.bitmap
                         previewMessage = buildString {
