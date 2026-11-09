@@ -1,19 +1,46 @@
 package com.lumpforge.app
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 
 /**
- * Decodes classic Doom picture patches using the first PLAYPAL palette.
- * Returns null when the lump is not a supported patch or has invalid data.
+ * Decodes common Doom PC graphics:
+ * - classic column-post Doom patches using PLAYPAL
+ * - PNG and other bitmap formats supported by Android BitmapFactory
  */
 object WadGraphicDecoder {
+    private const val MAX_DIMENSION = 4096
+    private const val MAX_PIXELS = 4_194_304L
+
+    fun decodeGraphic(data: ByteArray, palette: ByteArray?): Bitmap? {
+        if (data.isEmpty()) return null
+
+        // Doom 64 PC ports store their graphic resources as standalone PNG images.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+            val width = bounds.outWidth
+            val height = bounds.outHeight
+            if (width > MAX_DIMENSION || height > MAX_DIMENSION ||
+                width.toLong() * height.toLong() > MAX_PIXELS
+            ) return null
+
+            val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
+            if (bitmap != null) return bitmap
+        }
+
+        // Fall back to the classic Doom picture patch format.
+        return palette?.let { decodePatch(data, it) }
+    }
+
     fun decodePatch(data: ByteArray, palette: ByteArray): Bitmap? {
         if (data.size < 8 || palette.size < 768) return null
 
         val width = u16(data, 0)
         val height = u16(data, 2)
         if (width !in 1..2048 || height !in 1..2048) return null
+        if (width.toLong() * height.toLong() > MAX_PIXELS) return null
         if (8L + width * 4L > data.size.toLong()) return null
 
         val pixels = IntArray(width * height) { Color.TRANSPARENT }
