@@ -78,6 +78,12 @@ private data class BrowserEntry(
 
 private data class WadLumpSource(val file: BrowserEntry, val lump: WadLump)
 
+private data class LoadedBaseWad(
+    val file: BrowserEntry,
+    val archive: WadArchive,
+    val palette: ByteArray?
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LumpForgeApp() {
@@ -91,10 +97,7 @@ private fun LumpForgeApp() {
     var selectedLump by remember { mutableStateOf<WadLump?>(null) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var previewMessage by remember { mutableStateOf("Selecciona un recurso para intentar previsualizarlo.") }
-    var cachedDoomPalette by remember { mutableStateOf<ByteArray?>(null) }
-    var cachedPaletteSource by remember { mutableStateOf<String?>(null) }
-    var cachedBaseWadEntry by remember { mutableStateOf<BrowserEntry?>(null) }
-    var cachedBaseWadArchive by remember { mutableStateOf<WadArchive?>(null) }
+    var loadedBaseWads by remember { mutableStateOf<List<LoadedBaseWad>>(emptyList()) }
     var wadTextures by remember { mutableStateOf<List<WadTextureDefinition>>(emptyList()) }
     var selectedTexture by remember { mutableStateOf<WadTextureDefinition?>(null) }
     var isLoading by remember { mutableStateOf(false) }
@@ -180,20 +183,20 @@ private fun LumpForgeApp() {
             }
             wadArchive = parsed
             if (parsed.format == "IWAD") {
-                cachedBaseWadEntry = wad
-                cachedBaseWadArchive = parsed
-            }
-            val paletteLump = parsed.lumps.lastOrNull {
-                it.name.equals("PLAYPAL", ignoreCase = true)
-            }
-            if (paletteLump != null && paletteLump.size >= 768L &&
-                (parsed.format == "IWAD" || cachedDoomPalette == null)
-            ) {
-                val palette = withContext(Dispatchers.IO) {
-                    readWadBytes(context, wad, paletteLump.offset, 768)
+                val paletteLump = parsed.lumps.lastOrNull {
+                    it.name.equals("PLAYPAL", ignoreCase = true)
                 }
-                cachedDoomPalette = palette
-                cachedPaletteSource = wad.name
+                val palette = if (paletteLump != null && paletteLump.size >= 768L) {
+                    withContext(Dispatchers.IO) {
+                        readWadBytes(context, wad, paletteLump.offset, 768)
+                    }
+                } else {
+                    null
+                }
+                val updated = loadedBaseWads
+                    .filterNot { it.file.document.uri == wad.document.uri } +
+                    LoadedBaseWad(wad, parsed, palette)
+                loadedBaseWads = updated
             }
         } catch (error: Exception) {
             loadError = error.localizedMessage ?: "No se pudo interpretar el WAD."
@@ -208,8 +211,7 @@ private fun LumpForgeApp() {
         selectedTexture?.name,
         selectedTexture?.sourceLump,
         wadArchive?.lumps?.size,
-        cachedPaletteSource,
-        cachedBaseWadArchive?.lumps?.size
+        loadedBaseWads.map { it.file.document.uri.toString() }
     ) {
         val wad = openedWad
         val lump = selectedLump
@@ -232,17 +234,15 @@ private fun LumpForgeApp() {
                         val definitions = withContext(Dispatchers.IO) {
                             val pnamesSource = archive.lumps.lastOrNull {
                                 it.name.equals("PNAMES", true)
-                            }?.let { WadLumpSource(wad, it) } ?: run {
-                                val baseFile = cachedBaseWadEntry
-                                val baseLump = cachedBaseWadArchive?.lumps?.lastOrNull {
-                                    it.name.equals("PNAMES", true)
-                                }
-                                if (baseFile != null && baseLump != null) {
-                                    WadLumpSource(baseFile, baseLump)
-                                } else null
-                            } ?: throw IllegalStateException(
-                                "No se encontró PNAMES en este WAD ni en el IWAD base."
-                            )
+                            }?.let { WadLumpSource(wad, it) } ?: loadedBaseWads
+                                .asReversed()
+                                .firstNotNullOfOrNull { base ->
+                                    base.archive.lumps.lastOrNull {
+                                        it.name.equals("PNAMES", true)
+                                    }?.let { WadLumpSource(base.file, it) }
+                                } ?: throw IllegalStateException(
+                                    "No se encontró PNAMES en el WAD abierto ni en los IWAD cargados."
+                                )
 
                             require(pnamesSource.lump.size in 4L..(2L * 1024L * 1024L)) {
                                 "PNAMES está vacío o supera el límite de lectura."
@@ -295,9 +295,11 @@ private fun LumpForgeApp() {
                             val palette = if (ownPalette != null && ownPalette.size >= 768L) {
                                 readWadBytes(context, wad, ownPalette.offset, 768)
                             } else {
-                                cachedDoomPalette ?: throw IllegalStateException(
-                                    "No hay una paleta cargada. Abre primero un IWAD como DOOM.WAD."
-                                )
+                                loadedBaseWads.asReversed()
+                                    .firstNotNullOfOrNull { it.palette }
+                                    ?: throw IllegalStateException(
+                                        "No hay una paleta cargada. Abre primero un IWAD como DOOM.WAD o DOOM2.WAD."
+                                    )
                             }
                             val patchCache = HashMap<String, Bitmap?>()
                             val rendered = WadTextureReader.render(selectedTexture!!) { patchName ->
@@ -308,13 +310,11 @@ private fun LumpForgeApp() {
                                         it.name.equals(patchName, true)
                                     }?.let { WadLumpSource(wad, it) }
                                     val base = if (own == null) {
-                                        val baseFile = cachedBaseWadEntry
-                                        val baseLump = cachedBaseWadArchive?.lumps?.lastOrNull {
-                                            it.name.equals(patchName, true)
+                                        loadedBaseWads.asReversed().firstNotNullOfOrNull { baseWad ->
+                                            baseWad.archive.lumps.lastOrNull {
+                                                it.name.equals(patchName, true)
+                                            }?.let { WadLumpSource(baseWad.file, it) }
                                         }
-                                        if (baseFile != null && baseLump != null) {
-                                            WadLumpSource(baseFile, baseLump)
-                                        } else null
                                     } else null
                                     val source = own ?: base
                                     val decoded = if (source == null ||
@@ -375,9 +375,11 @@ private fun LumpForgeApp() {
                         val palette = if (ownPalette != null && ownPalette.size >= 768L) {
                             readWadBytes(context, wad, ownPalette.offset, 768)
                         } else {
-                            cachedDoomPalette ?: throw IllegalStateException(
-                                "Este WAD no contiene PLAYPAL. Abre primero DOOM.WAD para cargar su paleta."
-                            )
+                            loadedBaseWads.asReversed()
+                                .firstNotNullOfOrNull { it.palette }
+                                ?: throw IllegalStateException(
+                                    "Este WAD no contiene PLAYPAL. Abre primero un IWAD base."
+                                )
                         }
                         val bytes = readWadBytes(context, wad, lump.offset, lump.size.toInt())
                         WadGraphicDecoder.decodePatch(bytes, palette)
@@ -389,7 +391,7 @@ private fun LumpForgeApp() {
                     previewMessage = if (
                         archive.lumps.none { it.name.equals("PLAYPAL", true) }
                     ) {
-                        "Vista previa con la paleta de ${cachedPaletteSource ?: "IWAD"}."
+                        "Vista previa con la paleta de ${loadedBaseWads.asReversed().firstOrNull { it.palette != null }?.file?.name ?: "IWAD"}."
                     } else {
                         "Vista previa de imagen Doom."
                     }
@@ -429,6 +431,19 @@ private fun LumpForgeApp() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            if (loadedBaseWads.isNotEmpty()) {
+                Text(
+                    text = "IWAD base cargados (${loadedBaseWads.size}): " +
+                        loadedBaseWads.joinToString(", ") { it.file.name },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (openedWad != null) {
                 Row(
                     modifier = Modifier
