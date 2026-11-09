@@ -633,6 +633,8 @@ private fun WadContents(
     onSelect: (WadLump) -> Unit,
     onSelectTexture: (WadTextureDefinition) -> Unit
 ) {
+    var showTexturePicker by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -698,6 +700,26 @@ private fun WadContents(
                     Text("Índice: ${lump.index} · ${lumpCategory(lumps, lump.index)}")
                     Text("Offset: ${lump.offset} bytes")
                     Text("Tamaño: ${formatSize(lump.size)}")
+                    if (lump.name.equals("TEXTURE1", true) ||
+                        lump.name.equals("TEXTURE2", true)
+                    ) {
+                        if (selectedTexture != null) {
+                            Text(
+                                "Textura elegida: ${selectedTexture.name} · ${selectedTexture.width} × ${selectedTexture.height}",
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { showTexturePicker = true },
+                            enabled = textures.isNotEmpty()
+                        ) {
+                            Text(
+                                if (textures.isEmpty()) "No hay texturas para explorar"
+                                else if (selectedTexture == null) "Elegir textura (${textures.size})"
+                                else "Cambiar textura (${textures.size})"
+                            )
+                        }
+                    }
                     Text(
                         previewMessage,
                         style = MaterialTheme.typography.bodySmall,
@@ -715,6 +737,54 @@ private fun WadContents(
                 }
             }
         }
+    }
+
+    if (showTexturePicker) {
+        AlertDialog(
+            onDismissRequest = { showTexturePicker = false },
+            title = { Text("Texturas disponibles") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "${textures.size} definiciones encontradas en TEXTURE1/TEXTURE2.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                        items(textures) { texture ->
+                            TextButton(
+                                onClick = {
+                                    onSelectTexture(texture)
+                                    showTexturePicker = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        texture.name,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "${texture.width} × ${texture.height} · ${texture.patches.size} parches · ${texture.sourceLump}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTexturePicker = false }) {
+                    Text("Cerrar")
+                }
+            }
+        )
     }
 }
 
