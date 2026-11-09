@@ -314,15 +314,10 @@ private fun LumpForgeApp() {
                             } else {
                                 loadedBaseWads.asReversed()
                                     .firstNotNullOfOrNull { it.palette }
-                                    ?: throw IllegalStateException(
-                                        "No hay una paleta cargada. Abre primero un IWAD como DOOM.WAD o DOOM2.WAD."
-                                    )
                             }
-                            val patchCache = HashMap<String, Bitmap?>()
+                            val patchCache = HashMap<String, WadPatchResolution>()
                             val rendered = WadTextureReader.render(selectedTexture!!) { patchName ->
-                                if (patchCache.containsKey(patchName)) {
-                                    patchCache[patchName]
-                                } else {
+                                patchCache[patchName] ?: run {
                                     val own = archive.lumps.lastOrNull {
                                         it.name.equals(patchName, true)
                                     }?.let { WadLumpSource(wad, it) }
@@ -334,19 +329,22 @@ private fun LumpForgeApp() {
                                         }
                                     } else null
                                     val source = own ?: base
-                                    val decoded = if (source == null ||
-                                        source.lump.size !in 8L..(8L * 1024L * 1024L)
-                                    ) {
-                                        null
+                                    val resolution = if (source == null) {
+                                        WadPatchResolution(found = false)
+                                    } else if (source.lump.size !in 8L..(8L * 1024L * 1024L)) {
+                                        WadPatchResolution(found = true)
                                     } else {
                                         val bytes = readWadBytes(
                                             context, source.file, source.lump.offset,
                                             source.lump.size.toInt()
                                         )
-                                        WadGraphicDecoder.decodePatch(bytes, palette)
+                                        WadPatchResolution(
+                                            bitmap = WadGraphicDecoder.decodeGraphic(bytes, palette),
+                                            found = true
+                                        )
                                     }
-                                    patchCache[patchName] = decoded
-                                    decoded
+                                    patchCache[patchName] = resolution
+                                    resolution
                                 }
                             }
                             rendered
@@ -354,12 +352,21 @@ private fun LumpForgeApp() {
                         previewBitmap = result.bitmap
                         previewMessage = buildString {
                             append("Textura compuesta ${selectedTexture!!.width} × ${selectedTexture!!.height}.")
-                            if (result.missingPatches.isEmpty()) {
-                                append(" Todos los parches se encontraron.")
+                            if (result.missingPatches.isEmpty() &&
+                                result.unsupportedPatches.isEmpty()
+                            ) {
+                                append(" Todos los parches se encontraron y se decodificaron.")
                             } else {
-                                append(" Parches no encontrados: ")
-                                append(result.missingPatches.joinToString(", "))
-                                append(".")
+                                if (result.missingPatches.isNotEmpty()) {
+                                    append(" Parches inexistentes: ")
+                                    append(result.missingPatches.joinToString(", "))
+                                    append(".")
+                                }
+                                if (result.unsupportedPatches.isNotEmpty()) {
+                                    append(" Formato gráfico no compatible: ")
+                                    append(result.unsupportedPatches.joinToString(", "))
+                                    append(".")
+                                }
                             }
                         }
                     } catch (error: Exception) {
@@ -394,14 +401,11 @@ private fun LumpForgeApp() {
                         } else {
                             loadedBaseWads.asReversed()
                                 .firstNotNullOfOrNull { it.palette }
-                                ?: throw IllegalStateException(
-                                    "Este WAD no contiene PLAYPAL. Abre primero un IWAD base."
-                                )
                         }
                         val bytes = readWadBytes(context, wad, lump.offset, lump.size.toInt())
-                        WadGraphicDecoder.decodePatch(bytes, palette)
+                        WadGraphicDecoder.decodeGraphic(bytes, palette)
                             ?: throw IllegalArgumentException(
-                                "Este recurso no parece ser una imagen tipo Doom patch compatible."
+                                "El recurso existe, pero no se reconoce como PNG, imagen compatible ni Doom Patch."
                             )
                     }
                     previewBitmap = result
@@ -937,7 +941,8 @@ private fun lumpCategory(lumps: List<WadLump>, index: Int): String {
     val markerNames = setOf(
         "F_START", "FF_START", "F_END", "FF_END",
         "S_START", "SS_START", "S_END", "SS_END",
-        "P_START", "PP_START", "P_END", "PP_END"
+        "P_START", "PP_START", "P_END", "PP_END",
+        "T_START", "T_END", "TT_START", "TT_END"
     )
     if (name in markerNames || name.matches(Regex("[PFS][0-9]_(START|END)"))) {
         return "Marcador"
@@ -952,6 +957,8 @@ private fun lumpCategory(lumps: List<WadLump>, index: Int): String {
             "F_END", "FF_END" -> if (section == "Textura de piso") section = null
             "P_START", "PP_START" -> section = "Parche gráfico"
             "P_END", "PP_END" -> if (section == "Parche gráfico") section = null
+            "T_START", "TT_START" -> section = "Textura PNG"
+            "T_END", "TT_END" -> if (section == "Textura PNG") section = null
         }
     }
     if (section != null) return section
@@ -975,7 +982,7 @@ private fun lumpCategory(lumps: List<WadLump>, index: Int): String {
 private fun lumpGlyph(category: String): String {
     return when (category) {
         "Mapa", "Datos de mapa" -> "🗺️"
-        "Gráfico / sprite", "Textura de piso", "Parche gráfico" -> "🖼️"
+        "Gráfico / sprite", "Textura de piso", "Parche gráfico", "Textura PNG" -> "🖼️"
         "Sonido", "Música" -> "🔊"
         "Marcador" -> "📌"
         "Definición de textura" -> "🎨"
