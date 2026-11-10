@@ -36,10 +36,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
@@ -53,7 +55,11 @@ import androidx.compose.ui.unit.dp
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.documentfile.provider.DocumentFile
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
@@ -100,8 +106,70 @@ private fun LumpForgeApp() {
     var loadedBaseWads by remember { mutableStateOf<List<LoadedBaseWad>>(emptyList()) }
     var wadTextures by remember { mutableStateOf<List<WadTextureDefinition>>(emptyList()) }
     var selectedTexture by remember { mutableStateOf<WadTextureDefinition?>(null) }
+    var soundPlaybackJob by remember { mutableStateOf<Job?>(null) }
+    var playingSoundIndex by remember { mutableStateOf<Int?>(null) }
+    val coroutineScope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            soundPlaybackJob?.cancel()
+        }
+    }
+
+    LaunchedEffect(openedWad?.document?.uri, selectedLump?.index) {
+        if (playingSoundIndex != null && playingSoundIndex != selectedLump?.index) {
+            soundPlaybackJob?.cancel()
+            soundPlaybackJob = null
+            playingSoundIndex = null
+        }
+    }
+
+    val toggleSoundPlayback: (WadLump) -> Unit = { soundLump ->
+        val activeWad = openedWad
+        if (playingSoundIndex == soundLump.index && soundPlaybackJob != null) {
+            soundPlaybackJob?.cancel()
+            soundPlaybackJob = null
+            playingSoundIndex = null
+            previewMessage = "Reproducción detenida."
+        } else if (activeWad != null) {
+            soundPlaybackJob?.cancel()
+            playingSoundIndex = soundLump.index
+            previewMessage = "Cargando efecto de sonido…"
+
+            lateinit var playback: Job
+            playback = coroutineScope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    val sound = withContext(Dispatchers.IO) {
+                        require(soundLump.size in 8L..(16L * 1024L * 1024L)) {
+                            "El sonido está vacío o supera el límite de lectura."
+                        }
+                        val bytes = readWadBytes(
+                            context, activeWad, soundLump.offset, soundLump.size.toInt()
+                        )
+                        WadSoundReader.parse(bytes)
+                    }
+                    previewMessage = "Reproduciendo DMX · ${sound.sampleRate} Hz · " +
+                        String.format(Locale.getDefault(), "%.1f s", sound.durationMillis / 1000.0)
+                    WadSoundPlayer.play(sound)
+                    previewMessage = "Reproducción finalizada."
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    previewMessage = error.localizedMessage
+                        ?: "No se pudo reproducir este sonido."
+                } finally {
+                    if (soundPlaybackJob === playback) {
+                        soundPlaybackJob = null
+                        playingSoundIndex = null
+                    }
+                }
+            }
+            soundPlaybackJob = playback
+            playback.start()
+        }
+    }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -378,6 +446,16 @@ private fun LumpForgeApp() {
                 wadTextures = emptyList()
                 selectedTexture = null
                 previewMessage = "Este recurso contiene datos de definición, no una imagen individual."
+            } else if (category == "Sonido") {
+                wadTextures = emptyList()
+                selectedTexture = null
+                previewBitmap = null
+                previewMessage = "Efecto de sonido Doom DMX. Pulsa «Reproducir sonido» para escucharlo."
+            } else if (category == "Música") {
+                wadTextures = emptyList()
+                selectedTexture = null
+                previewBitmap = null
+                previewMessage = "Recurso de música Doom. La reproducción MUS/MIDI se añadirá en otra etapa."
             } else if (category == "Script") {
                 wadTextures = emptyList()
                 selectedTexture = null
@@ -583,7 +661,9 @@ private fun LumpForgeApp() {
                             selectedTexture = null
                             wadTextures = emptyList()
                         },
-                        onSelectTexture = { selectedTexture = it }
+                        onSelectTexture = { selectedTexture = it },
+                        playingSoundIndex = playingSoundIndex,
+                        onToggleSoundPlayback = toggleSoundPlayback
                     )
                 }
 
@@ -666,8 +746,10 @@ private fun WadContents(
     previewMessage: String,
     textures: List<WadTextureDefinition>,
     selectedTexture: WadTextureDefinition?,
+    playingSoundIndex: Int?,
     onSelect: (WadLump) -> Unit,
-    onSelectTexture: (WadTextureDefinition) -> Unit
+    onSelectTexture: (WadTextureDefinition) -> Unit,
+    onToggleSoundPlayback: (WadLump) -> Unit
 ) {
     var showTexturePicker by remember { mutableStateOf(false) }
 
@@ -736,6 +818,17 @@ private fun WadContents(
                     Text("Índice: ${lump.index} · ${lumpCategory(lumps, lump.index)}")
                     Text("Offset: ${lump.offset} bytes")
                     Text("Tamaño: ${formatSize(lump.size)}")
+                    if (lumpCategory(lumps, lump.index) == "Sonido") {
+                        OutlinedButton(
+                            onClick = { onToggleSoundPlayback(lump) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (playingSoundIndex == lump.index) "Detener sonido"
+                                else "Reproducir sonido"
+                            )
+                        }
+                    }
                     if (lump.name.equals("TEXTURE1", true) ||
                         lump.name.equals("TEXTURE2", true) ||
                         lump.name.equals("TEXTURES", true)
