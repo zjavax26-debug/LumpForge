@@ -30,16 +30,23 @@ object WadSoundReader {
         }
 
         val sampleCount = u32(data, 4)
-        require(sampleCount in 1..MAX_SAMPLE_BYTES.toLong()) {
-            "El sonido está vacío o supera el límite de lectura."
+        require(sampleCount in 33..MAX_SAMPLE_BYTES.toLong()) {
+            "El sonido está vacío o no contiene suficientes muestras DMX."
         }
         require(8L + sampleCount <= data.size.toLong()) {
             "Los datos PCM del sonido están truncados."
         }
 
+        // DMX reserves 16 silent samples at the beginning and at the end.
+        val sampleStart = 8 + 16
+        val sampleEnd = 8 + sampleCount.toInt() - 16
+        require(sampleEnd > sampleStart) {
+            "El sonido no contiene muestras reproducibles."
+        }
+
         return DoomDmxSound(
             sampleRate = sampleRate,
-            samples = data.copyOfRange(8, 8 + sampleCount.toInt())
+            samples = data.copyOfRange(sampleStart, sampleEnd)
         )
     }
 
