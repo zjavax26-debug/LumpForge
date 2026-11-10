@@ -108,6 +108,9 @@ private fun LumpForgeApp() {
     var selectedTexture by remember { mutableStateOf<WadTextureDefinition?>(null) }
     var soundPlaybackJob by remember { mutableStateOf<Job?>(null) }
     var playingSoundIndex by remember { mutableStateOf<Int?>(null) }
+    var musicMidiBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var musicDetails by remember { mutableStateOf<String?>(null) }
+    var pendingMidiBytes by remember { mutableStateOf<ByteArray?>(null) }
     val coroutineScope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -169,6 +172,23 @@ private fun LumpForgeApp() {
             soundPlaybackJob = playback
             playback.start()
         }
+    }
+
+    val midiExporter = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("audio/midi")
+    ) { uri ->
+        val bytes = pendingMidiBytes
+        if (uri != null && bytes != null) {
+            try {
+                val output = context.contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Android no pudo crear el archivo MIDI.")
+                output.use { it.write(bytes) }
+                previewMessage = "Archivo MIDI exportado correctamente."
+            } catch (error: Exception) {
+                previewMessage = error.localizedMessage ?: "No se pudo guardar el MIDI."
+            }
+        }
+        pendingMidiBytes = null
     }
 
     val folderPicker = rememberLauncherForActivityResult(
@@ -449,13 +469,64 @@ private fun LumpForgeApp() {
             } else if (category == "Sonido") {
                 wadTextures = emptyList()
                 selectedTexture = null
+                musicMidiBytes = null
+                musicDetails = null
                 previewBitmap = null
                 previewMessage = "Efecto de sonido Doom DMX. Pulsa «Reproducir sonido» para escucharlo."
             } else if (category == "Música") {
                 wadTextures = emptyList()
                 selectedTexture = null
                 previewBitmap = null
-                previewMessage = "Recurso de música Doom. La reproducción MUS/MIDI se añadirá en otra etapa."
+                musicMidiBytes = null
+                musicDetails = null
+                previewMessage = "Analizando pista musical…"
+                try {
+                    val musicResult = withContext(Dispatchers.IO) {
+                        require(lump.size in 4L..(8L * 1024L * 1024L)) {
+                            "La pista musical está vacía o supera el límite de lectura."
+                        }
+                        val bytes = readWadBytes(
+                            context, wad, lump.offset, lump.size.toInt()
+                        )
+                        when {
+                            WadMusReader.isMus(bytes) -> {
+                                val song = WadMusReader.convert(bytes)
+                                val durationSeconds = song.durationMillis / 1000.0
+                                Triple(
+                                    song.midiBytes,
+                                    "Formato MUS convertido a MIDI · " +
+                                        "${song.primaryChannels} canales principales · " +
+                                        "${song.secondaryChannels} secundarios · " +
+                                        "${song.instrumentCount} instrumentos · " +
+                                        String.format(
+                                            Locale.getDefault(), "%.1f s", durationSeconds
+                                        ),
+                                    "MUS"
+                                )
+                            }
+                            bytes.size >= 4 &&
+                                bytes[0] == 'M'.code.toByte() &&
+                                bytes[1] == 'T'.code.toByte() &&
+                                bytes[2] == 'h'.code.toByte() &&
+                                bytes[3] == 'd'.code.toByte() -> Triple(
+                                    bytes,
+                                    "La pista ya está en formato Standard MIDI.",
+                                    "MIDI"
+                                )
+                            else -> throw IllegalArgumentException(
+                                "El recurso no contiene una pista MUS ni Standard MIDI reconocible."
+                            )
+                        }
+                    }
+                    musicMidiBytes = musicResult.first
+                    musicDetails = musicResult.second
+                    previewMessage = "Pista musical lista para exportar como MIDI."
+                } catch (error: Exception) {
+                    musicMidiBytes = null
+                    musicDetails = null
+                    previewMessage = error.localizedMessage
+                        ?: "No se pudo interpretar la pista musical."
+                }
             } else if (category == "Script") {
                 wadTextures = emptyList()
                 selectedTexture = null
@@ -663,7 +734,17 @@ private fun LumpForgeApp() {
                         },
                         onSelectTexture = { selectedTexture = it },
                         playingSoundIndex = playingSoundIndex,
-                        onToggleSoundPlayback = toggleSoundPlayback
+                        onToggleSoundPlayback = toggleSoundPlayback,
+                        musicDetails = musicDetails,
+                        canExportMusic = musicMidiBytes != null,
+                        onExportMusic = {
+                            musicMidiBytes?.let { bytes ->
+                                pendingMidiBytes = bytes
+                                midiExporter.launch(
+                                    "${selectedLump?.name?.ifBlank { "DoomMusic" } ?: "DoomMusic"}.mid"
+                                )
+                            }
+                        }
                     )
                 }
 
@@ -747,9 +828,12 @@ private fun WadContents(
     textures: List<WadTextureDefinition>,
     selectedTexture: WadTextureDefinition?,
     playingSoundIndex: Int?,
+    musicDetails: String?,
+    canExportMusic: Boolean,
     onSelect: (WadLump) -> Unit,
     onSelectTexture: (WadTextureDefinition) -> Unit,
-    onToggleSoundPlayback: (WadLump) -> Unit
+    onToggleSoundPlayback: (WadLump) -> Unit,
+    onExportMusic: () -> Unit
 ) {
     var showTexturePicker by remember { mutableStateOf(false) }
 
@@ -828,6 +912,27 @@ private fun WadContents(
                                 else "Reproducir sonido"
                             )
                         }
+                    }
+                    if (lumpCategory(lumps, lump.index) == "Música") {
+                        musicDetails?.let { details ->
+                            Text(
+                                details,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onExportMusic,
+                            enabled = canExportMusic,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Exportar pista MIDI")
+                        }
+                        Text(
+                            "La exportación permite abrir la pista con un reproductor MIDI compatible. La reproducción integrada con SoundFont se incorporará después.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                     if (lump.name.equals("TEXTURE1", true) ||
                         lump.name.equals("TEXTURE2", true) ||
