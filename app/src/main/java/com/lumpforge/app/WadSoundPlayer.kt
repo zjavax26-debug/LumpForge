@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
@@ -65,7 +66,7 @@ object WadSoundPlayer {
             // AudioTrack may still have queued samples after the final write.
             while (track.playbackHeadPosition.toLong() < sound.samples.size.toLong()) {
                 currentCoroutineContext().ensureActive()
-                kotlinx.coroutines.yield()
+                delay(5)
             }
         } finally {
             try {
