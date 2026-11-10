@@ -1,6 +1,8 @@
 package com.lumpforge.app
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -55,12 +57,16 @@ import androidx.compose.ui.unit.dp
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.documentfile.provider.DocumentFile
+import dev.kotlinds.fluidsynthkmp.MidiFilePlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -94,6 +100,21 @@ private data class LoadedBaseWad(
 @Composable
 private fun LumpForgeApp() {
     val context = LocalContext.current
+    val audioPreferences = remember {
+        context.getSharedPreferences("lumpforge_audio", Context.MODE_PRIVATE)
+    }
+    var soundFontUriString by remember {
+        mutableStateOf(audioPreferences.getString("soundfont_uri", null))
+    }
+    var soundFontDisplayName by remember {
+        mutableStateOf(audioPreferences.getString("soundfont_name", null))
+    }
+    var midiPlayer by remember { mutableStateOf<MidiFilePlayer?>(null) }
+    var activeMidiFile by remember { mutableStateOf<File?>(null) }
+    var musicPlaybackMonitor by remember { mutableStateOf<Job?>(null) }
+    var musicPlaybackState by remember { mutableStateOf("stopped") }
+    var playingMusicIndex by remember { mutableStateOf<Int?>(null) }
+    var playingMusicWadUri by remember { mutableStateOf<String?>(null) }
     var rootFolder by remember { mutableStateOf<DocumentFile?>(null) }
     var currentFolder by remember { mutableStateOf<DocumentFile?>(null) }
     var entries by remember { mutableStateOf<List<BrowserEntry>>(emptyList()) }
@@ -113,11 +134,64 @@ private fun LumpForgeApp() {
     var pendingMidiBytes by remember { mutableStateOf<ByteArray?>(null) }
     val coroutineScope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(false) }
+
+    suspend fun stopCurrentMusic() {
+        musicPlaybackMonitor?.cancel()
+        musicPlaybackMonitor = null
+        val player = midiPlayer
+        midiPlayer = null
+        val midiFile = activeMidiFile
+        activeMidiFile = null
+        musicPlaybackState = "stopped"
+        playingMusicIndex = null
+        playingMusicWadUri = null
+        if (player != null) {
+            withContext(Dispatchers.IO) {
+                runCatching { player.stop() }
+                runCatching { player.close() }
+            }
+        }
+        midiFile?.delete()
+    }
+
+    fun watchMusicPlayback(player: MidiFilePlayer) {
+        musicPlaybackMonitor?.cancel()
+        musicPlaybackMonitor = coroutineScope.launch {
+            delay(350)
+            while (isActive && midiPlayer === player && musicPlaybackState == "playing") {
+                val stillPlaying = runCatching {
+                    withContext(Dispatchers.IO) { player.isPlaying }
+                }.getOrDefault(false)
+
+                if (!stillPlaying) {
+                    val finishedFile = activeMidiFile
+                    activeMidiFile = null
+                    midiPlayer = null
+                    playingMusicIndex = null
+                    playingMusicWadUri = null
+                    musicPlaybackState = "completed"
+                    withContext(Dispatchers.IO) {
+                        runCatching { player.close() }
+                    }
+                    finishedFile?.delete()
+                    previewMessage = "Reproducción musical finalizada."
+                    break
+                }
+                delay(180)
+            }
+        }
+    }
     var loadError by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
             soundPlaybackJob?.cancel()
+            musicPlaybackMonitor?.cancel()
+            midiPlayer?.let { player ->
+                runCatching { player.stop() }
+                runCatching { player.close() }
+            }
+            activeMidiFile?.delete()
         }
     }
 
@@ -126,6 +200,12 @@ private fun LumpForgeApp() {
             soundPlaybackJob?.cancel()
             soundPlaybackJob = null
             playingSoundIndex = null
+        }
+        if (playingMusicIndex != null &&
+            (playingMusicIndex != selectedLump?.index ||
+                playingMusicWadUri != openedWad?.document?.uri?.toString())
+        ) {
+            stopCurrentMusic()
         }
     }
 
@@ -171,6 +251,136 @@ private fun LumpForgeApp() {
             }
             soundPlaybackJob = playback
             playback.start()
+        }
+    }
+
+    val soundFontPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                val displayName = SoundFontFileManager.displayName(context, uri)
+                require(displayName.endsWith(".sf2", ignoreCase = true)) {
+                    "Selecciona un archivo SoundFont con extensión .sf2."
+                }
+                coroutineScope.launch {
+                    stopCurrentMusic()
+                    soundFontUriString = uri.toString()
+                    soundFontDisplayName = displayName
+                    audioPreferences.edit()
+                        .putString("soundfont_uri", uri.toString())
+                        .putString("soundfont_name", displayName)
+                        .apply()
+                    previewMessage = "SoundFont seleccionado: $displayName."
+                }
+            } catch (error: Exception) {
+                previewMessage = error.localizedMessage
+                    ?: "No se pudo seleccionar el SoundFont."
+            }
+        }
+    }
+
+    val toggleMusicPlayback: () -> Unit = {
+        coroutineScope.launch {
+            val currentPlayer = midiPlayer
+            when {
+                currentPlayer != null && musicPlaybackState == "playing" -> {
+                    musicPlaybackMonitor?.cancel()
+                    musicPlaybackMonitor = null
+                    try {
+                        withContext(Dispatchers.IO) { currentPlayer.pause() }
+                        musicPlaybackState = "paused"
+                        previewMessage = "Música en pausa."
+                    } catch (error: Exception) {
+                        stopCurrentMusic()
+                        previewMessage = error.localizedMessage
+                            ?: "No se pudo pausar la música."
+                    }
+                }
+
+                currentPlayer != null && musicPlaybackState == "paused" -> {
+                    try {
+                        withContext(Dispatchers.IO) { currentPlayer.play() }
+                        musicPlaybackState = "playing"
+                        previewMessage = "Reanudando música con ${soundFontDisplayName ?: "SoundFont"}."
+                        watchMusicPlayback(currentPlayer)
+                    } catch (error: Exception) {
+                        stopCurrentMusic()
+                        previewMessage = error.localizedMessage
+                            ?: "No se pudo reanudar la música."
+                    }
+                }
+
+                else -> {
+                    val selectedSoundFont = soundFontUriString
+                    val selectedSoundFontName = soundFontDisplayName
+                    val midiBytes = musicMidiBytes
+                    val musicName = selectedLump?.name ?: "DoomMusic"
+                    val musicIndex = selectedLump?.index ?: -1
+                    val wadUri = openedWad?.document?.uri?.toString()
+
+                    if (selectedSoundFont == null || selectedSoundFontName == null) {
+                        previewMessage = "Primero selecciona un SoundFont (.sf2)."
+                        return@launch
+                    }
+                    if (midiBytes == null) {
+                        previewMessage = "La pista musical todavía no está preparada."
+                        return@launch
+                    }
+
+                    musicPlaybackState = "loading"
+                    previewMessage = "Cargando SoundFont y preparando el sintetizador…"
+                    try {
+                        val prepared = withContext(Dispatchers.IO) {
+                            val soundFontFile = SoundFontFileManager.copyToPrivateStorage(
+                                context,
+                                Uri.parse(selectedSoundFont),
+                                selectedSoundFontName
+                            )
+                            val midiFile = SoundFontFileManager.writeMidiToCache(
+                                context,
+                                musicName,
+                                musicIndex,
+                                midiBytes
+                            )
+                            try {
+                                MidiFilePlayer(
+                                    soundFontFile.absolutePath,
+                                    midiFile.absolutePath,
+                                    44_100
+                                ) to midiFile
+                            } catch (error: Exception) {
+                                midiFile.delete()
+                                throw error
+                            }
+                        }
+
+                        midiPlayer = prepared.first
+                        activeMidiFile = prepared.second
+                        playingMusicIndex = musicIndex
+                        playingMusicWadUri = wadUri
+                        withContext(Dispatchers.IO) { prepared.first.play() }
+                        musicPlaybackState = "playing"
+                        previewMessage = "Reproduciendo música con $selectedSoundFontName."
+                        watchMusicPlayback(prepared.first)
+                    } catch (error: Exception) {
+                        stopCurrentMusic()
+                        previewMessage = error.localizedMessage
+                            ?: "No se pudo iniciar el sintetizador FluidSynth."
+                    }
+                }
+            }
+        }
+    }
+
+    val stopMusicPlayback: () -> Unit = {
+        coroutineScope.launch {
+            stopCurrentMusic()
+            previewMessage = "Reproducción musical detenida."
         }
     }
 
@@ -520,7 +730,11 @@ private fun LumpForgeApp() {
                     }
                     musicMidiBytes = musicResult.first
                     musicDetails = musicResult.second
-                    previewMessage = "Pista musical lista para exportar como MIDI."
+                    previewMessage = if (soundFontDisplayName != null) {
+                        "Pista lista. SoundFont seleccionado: ${soundFontDisplayName}."
+                    } else {
+                        "Pista lista para exportar. Selecciona un SoundFont .sf2 para reproducirla aquí."
+                    }
                 } catch (error: Exception) {
                     musicMidiBytes = null
                     musicDetails = null
@@ -737,6 +951,12 @@ private fun LumpForgeApp() {
                         onToggleSoundPlayback = toggleSoundPlayback,
                         musicDetails = musicDetails,
                         canExportMusic = musicMidiBytes != null,
+                        soundFontName = soundFontDisplayName,
+                        canPlayMusic = musicMidiBytes != null && soundFontUriString != null,
+                        musicPlaybackState = musicPlaybackState,
+                        onPickSoundFont = { soundFontPicker.launch(arrayOf("*/*")) },
+                        onToggleMusicPlayback = toggleMusicPlayback,
+                        onStopMusicPlayback = stopMusicPlayback,
                         onExportMusic = {
                             musicMidiBytes?.let { bytes ->
                                 pendingMidiBytes = bytes
@@ -830,6 +1050,12 @@ private fun WadContents(
     playingSoundIndex: Int?,
     musicDetails: String?,
     canExportMusic: Boolean,
+    soundFontName: String?,
+    canPlayMusic: Boolean,
+    musicPlaybackState: String,
+    onPickSoundFont: () -> Unit,
+    onToggleMusicPlayback: () -> Unit,
+    onStopMusicPlayback: () -> Unit,
     onSelect: (WadLump) -> Unit,
     onSelectTexture: (WadTextureDefinition) -> Unit,
     onToggleSoundPlayback: (WadLump) -> Unit,
@@ -921,6 +1147,42 @@ private fun WadContents(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        Text(
+                            "SoundFont: ${soundFontName ?: "Ninguno seleccionado"}",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        OutlinedButton(
+                            onClick = onPickSoundFont,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (soundFontName == null) "Elegir SoundFont (.sf2)"
+                                else "Cambiar SoundFont"
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onToggleMusicPlayback,
+                            enabled = canPlayMusic && musicPlaybackState != "loading",
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                when (musicPlaybackState) {
+                                    "playing" -> "Pausar música"
+                                    "paused" -> "Reanudar música"
+                                    "loading" -> "Preparando sintetizador…"
+                                    else -> "Reproducir música"
+                                }
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onStopMusicPlayback,
+                            enabled = musicPlaybackState == "playing" ||
+                                musicPlaybackState == "paused" ||
+                                musicPlaybackState == "loading",
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Detener música")
+                        }
                         OutlinedButton(
                             onClick = onExportMusic,
                             enabled = canExportMusic,
@@ -929,7 +1191,7 @@ private fun WadContents(
                             Text("Exportar pista MIDI")
                         }
                         Text(
-                            "La exportación permite abrir la pista con un reproductor MIDI compatible. La reproducción integrada con SoundFont se incorporará después.",
+                            "El SoundFont se selecciona desde el almacenamiento y se conserva para futuras sesiones. No se incluye ningún banco de sonidos en la APK.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
