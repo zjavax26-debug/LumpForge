@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +52,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -1352,11 +1354,13 @@ private fun WadContents(
 
 @Composable
 private fun MapPreviewCanvas(data: WadMapPreviewData) {
-    // Use a high-contrast foreground on the preview surface. A 1.4 px stroke
-    // was too faint on some device densities.
     val lineColor = MaterialTheme.colorScheme.onSurface
     val thingColor = MaterialTheme.colorScheme.tertiary
     val backgroundColor = MaterialTheme.colorScheme.surfaceVariant
+
+    var showThings by remember(data.mapName) { mutableStateOf(true) }
+    var userZoom by remember(data.mapName) { mutableStateOf(1f) }
+    var userPan by remember(data.mapName) { mutableStateOf(Offset.Zero) }
 
     val usedVertexIndices = remember(data) {
         data.lines.asSequence()
@@ -1376,15 +1380,46 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
         return
     }
 
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextButton(onClick = { showThings = !showThings }) {
+            Text(if (showThings) "Ocultar objetos" else "Mostrar objetos")
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${(userZoom * 100).toInt()}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TextButton(
+                onClick = {
+                    userZoom = 1f
+                    userPan = Offset.Zero
+                },
+                enabled = userZoom != 1f || userPan != Offset.Zero
+            ) {
+                Text("Restablecer")
+            }
+        }
+    }
+
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(320.dp)
+            .pointerInput(data.mapName) {
+                detectTransformGestures { _, pan, zoomChange, _ ->
+                    userZoom = (userZoom * zoomChange).coerceIn(1f, 12f)
+                    userPan = userPan + pan
+                }
+            }
     ) {
         drawRect(color = backgroundColor)
 
-        // Fit the drawing to vertices referenced by valid LINEDEFS only.
-        // Unused outlier vertices must not shrink the actual map to a dot.
+        // Fit to vertices used by LINEDEFS, not unused outliers.
         val minX = usedVertices.minOf { it.x }.toFloat()
         val maxX = usedVertices.maxOf { it.x }.toFloat()
         val minY = usedVertices.minOf { it.y }.toFloat()
@@ -1399,35 +1434,39 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
         val contentHeight = spanY * scale
         val left = (size.width - contentWidth) / 2f
         val top = (size.height - contentHeight) / 2f
+        val center = Offset(size.width / 2f, size.height / 2f)
 
-        fun project(vertex: WadMapVertex): Offset = Offset(
-            x = left + (vertex.x - minX) * scale,
-            y = top + (maxY - vertex.y) * scale
-        )
+        fun project(vertex: WadMapVertex): Offset {
+            val fitted = Offset(
+                x = left + (vertex.x - minX) * scale,
+                y = top + (maxY - vertex.y) * scale
+            )
+            return center + (fitted - center) * userZoom + userPan
+        }
 
-        val lineStroke = 2.2.dp.toPx().coerceAtLeast(2f)
+        val lineStroke = 2.dp.toPx().coerceAtLeast(1.5f)
         data.lines.forEach { line ->
             val startVertex = data.vertices.getOrNull(line.startVertex) ?: return@forEach
             val endVertex = data.vertices.getOrNull(line.endVertex) ?: return@forEach
-            val start = project(startVertex)
-            val end = project(endVertex)
             drawLine(
                 color = lineColor,
-                start = start,
-                end = end,
+                start = project(startVertex),
+                end = project(endVertex),
                 strokeWidth = lineStroke,
                 cap = StrokeCap.Round
             )
         }
 
-        val thingRadius = 3.5.dp.toPx().coerceAtLeast(3f)
-        data.things.forEach { thing ->
-            val point = project(WadMapVertex(thing.x, thing.y))
-            drawCircle(
-                color = thingColor,
-                radius = thingRadius,
-                center = point
-            )
+        if (showThings) {
+            // Small markers preserve the geometry underneath in dense rooms.
+            val thingRadius = 1.6.dp.toPx().coerceAtLeast(1f)
+            data.things.forEach { thing ->
+                drawCircle(
+                    color = thingColor.copy(alpha = 0.72f),
+                    radius = thingRadius,
+                    center = project(WadMapVertex(thing.x, thing.y))
+                )
+            }
         }
     }
 
@@ -1441,10 +1480,17 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             style = MaterialTheme.typography.labelSmall,
             color = lineColor
         )
+        if (showThings) {
+            Text(
+                "● Objetos",
+                style = MaterialTheme.typography.labelSmall,
+                color = thingColor
+            )
+        }
         Text(
-            "● Objetos",
+            "Pellizca para zoom · Arrastra para mover",
             style = MaterialTheme.typography.labelSmall,
-            color = thingColor
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
