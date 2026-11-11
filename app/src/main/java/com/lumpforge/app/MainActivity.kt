@@ -123,6 +123,7 @@ private fun LumpForgeApp() {
     var wadArchive by remember { mutableStateOf<WadArchive?>(null) }
     var selectedLump by remember { mutableStateOf<WadLump?>(null) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var mapPreviewData by remember { mutableStateOf<WadMapPreviewData?>(null) }
     var previewMessage by remember { mutableStateOf("Selecciona un recurso para intentar previsualizarlo.") }
     var loadedBaseWads by remember { mutableStateOf<List<LoadedBaseWad>>(emptyList()) }
     var wadTextures by remember { mutableStateOf<List<WadTextureDefinition>>(emptyList()) }
@@ -515,6 +516,7 @@ private fun LumpForgeApp() {
         val lump = selectedLump
         val archive = wadArchive
         previewBitmap = null
+        mapPreviewData = null
 
         if (wad == null || lump == null || archive == null) {
             previewMessage = "Selecciona un recurso para intentar previsualizarlo."
@@ -741,6 +743,54 @@ private fun LumpForgeApp() {
                     previewMessage = error.localizedMessage
                         ?: "No se pudo interpretar la pista musical."
                 }
+            } else if (category == "Mapa" && WadMapReader.isMapMarker(lump.name)) {
+                wadTextures = emptyList()
+                selectedTexture = null
+                musicMidiBytes = null
+                musicDetails = null
+                previewMessage = "Leyendo geometría del mapa…"
+                try {
+                    val mapData = withContext(Dispatchers.IO) {
+                        val markerPosition = archive.lumps.indexOfFirst {
+                            it.index == lump.index
+                        }
+                        require(markerPosition >= 0) {
+                            "No se pudo localizar el marcador ${lump.name} en el directorio."
+                        }
+
+                        val followingLumps = archive.lumps.drop(markerPosition + 1)
+                        val nextMapPosition = followingLumps.indexOfFirst {
+                            WadMapReader.isMapMarker(it.name)
+                        }
+                        val mapLumps = if (nextMapPosition >= 0) {
+                            followingLumps.take(nextMapPosition)
+                        } else {
+                            followingLumps
+                        }
+
+                        WadMapReader.parse(lump.name, mapLumps) { mapLump ->
+                            readWadBytes(
+                                context, wad, mapLump.offset, mapLump.size.toInt()
+                            )
+                        }
+                    }
+                    mapPreviewData = mapData
+                    previewMessage = buildString {
+                        append("${mapData.vertices.size} vértices · ")
+                        append("${mapData.lines.size} líneas · ")
+                        append("${mapData.things.size} objetos · ")
+                        append("${mapData.sectorCount} sectores.")
+                        if (mapData.invalidLineCount > 0) {
+                            append(" Líneas ignoradas por referencias no válidas: ")
+                            append(mapData.invalidLineCount)
+                            append(".")
+                        }
+                    }
+                } catch (error: Exception) {
+                    mapPreviewData = null
+                    previewMessage = error.localizedMessage
+                        ?: "No se pudo interpretar la geometría de este mapa."
+                }
             } else if (category == "Script") {
                 wadTextures = emptyList()
                 selectedTexture = null
@@ -938,6 +988,7 @@ private fun LumpForgeApp() {
                         lumps = wadArchive!!.lumps,
                         selectedLump = selectedLump,
                         previewBitmap = previewBitmap,
+                        mapPreviewData = mapPreviewData,
                         previewMessage = previewMessage,
                         textures = wadTextures,
                         selectedTexture = selectedTexture,
@@ -1044,6 +1095,7 @@ private fun WadContents(
     lumps: List<WadLump>,
     selectedLump: WadLump?,
     previewBitmap: Bitmap?,
+    mapPreviewData: WadMapPreviewData?,
     previewMessage: String,
     textures: List<WadTextureDefinition>,
     selectedTexture: WadTextureDefinition?,
@@ -1231,6 +1283,18 @@ private fun WadContents(
                                 .heightIn(max = 260.dp)
                         )
                     }
+                    mapPreviewData?.let { mapData ->
+                        Text(
+                            "Vista previa 2D · ${mapData.mapName}",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        MapPreviewCanvas(mapData)
+                        Text(
+                            "Líneas del mapa y posiciones de objetos. La vista texturizada y las alturas se incorporarán en otra etapa.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -1281,6 +1345,79 @@ private fun WadContents(
                     Text("Cerrar")
                 }
             }
+        )
+    }
+}
+
+@Composable
+private fun MapPreviewCanvas(data: WadMapPreviewData) {
+    val lineColor = MaterialTheme.colorScheme.primary
+    val thingColor = MaterialTheme.colorScheme.tertiary
+    val backgroundColor = MaterialTheme.colorScheme.surfaceVariant
+
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 220.dp, max = 320.dp)
+    ) {
+        drawRect(color = backgroundColor)
+        val minX = data.vertices.minOf { it.x }.toFloat()
+        val maxX = data.vertices.maxOf { it.x }.toFloat()
+        val minY = data.vertices.minOf { it.y }.toFloat()
+        val maxY = data.vertices.maxOf { it.y }.toFloat()
+        val spanX = (maxX - minX).coerceAtLeast(1f)
+        val spanY = (maxY - minY).coerceAtLeast(1f)
+        val padding = 16.dp.toPx()
+        val availableWidth = (size.width - padding * 2).coerceAtLeast(1f)
+        val availableHeight = (size.height - padding * 2).coerceAtLeast(1f)
+        val scale = minOf(availableWidth / spanX, availableHeight / spanY)
+        val contentWidth = spanX * scale
+        val contentHeight = spanY * scale
+        val left = (size.width - contentWidth) / 2f
+        val top = (size.height - contentHeight) / 2f
+
+        fun project(vertex: WadMapVertex): Offset = Offset(
+            x = left + (vertex.x - minX) * scale,
+            y = top + (maxY - vertex.y) * scale
+        )
+
+        data.lines.forEach { line ->
+            val start = project(data.vertices[line.startVertex])
+            val end = project(data.vertices[line.endVertex])
+            drawLine(
+                color = lineColor,
+                start = start,
+                end = end,
+                strokeWidth = 1.4f,
+                cap = StrokeCap.Round
+            )
+        }
+
+        val thingRadius = 2.8.dp.toPx().coerceAtLeast(2f)
+        data.things.forEach { thing ->
+            val point = project(WadMapVertex(thing.x, thing.y))
+            drawCircle(
+                color = thingColor,
+                radius = thingRadius,
+                center = point
+            )
+        }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "━ Geometría",
+            style = MaterialTheme.typography.labelSmall,
+            color = lineColor
+        )
+        Text(
+            "● Objetos",
+            style = MaterialTheme.typography.labelSmall,
+            color = thingColor
         )
     }
 }
