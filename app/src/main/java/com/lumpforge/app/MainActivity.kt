@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -1351,23 +1352,46 @@ private fun WadContents(
 
 @Composable
 private fun MapPreviewCanvas(data: WadMapPreviewData) {
-    val lineColor = MaterialTheme.colorScheme.primary
+    // Use a high-contrast foreground on the preview surface. A 1.4 px stroke
+    // was too faint on some device densities.
+    val lineColor = MaterialTheme.colorScheme.onSurface
     val thingColor = MaterialTheme.colorScheme.tertiary
     val backgroundColor = MaterialTheme.colorScheme.surfaceVariant
+
+    val usedVertexIndices = remember(data) {
+        data.lines.asSequence()
+            .flatMap { sequenceOf(it.startVertex, it.endVertex) }
+            .distinct()
+            .toList()
+    }
+    val usedVertices = remember(data, usedVertexIndices) {
+        usedVertexIndices.mapNotNull(data.vertices::getOrNull)
+    }
+
+    if (usedVertices.isEmpty()) {
+        Text(
+            "El mapa no contiene vértices conectados a líneas.",
+            color = MaterialTheme.colorScheme.error
+        )
+        return
+    }
 
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 220.dp, max = 320.dp)
+            .height(320.dp)
     ) {
         drawRect(color = backgroundColor)
-        val minX = data.vertices.minOf { it.x }.toFloat()
-        val maxX = data.vertices.maxOf { it.x }.toFloat()
-        val minY = data.vertices.minOf { it.y }.toFloat()
-        val maxY = data.vertices.maxOf { it.y }.toFloat()
+
+        // Fit the drawing to vertices referenced by valid LINEDEFS only.
+        // Unused outlier vertices must not shrink the actual map to a dot.
+        val minX = usedVertices.minOf { it.x }.toFloat()
+        val maxX = usedVertices.maxOf { it.x }.toFloat()
+        val minY = usedVertices.minOf { it.y }.toFloat()
+        val maxY = usedVertices.maxOf { it.y }.toFloat()
         val spanX = (maxX - minX).coerceAtLeast(1f)
         val spanY = (maxY - minY).coerceAtLeast(1f)
-        val padding = 16.dp.toPx()
+        val padding = 18.dp.toPx()
         val availableWidth = (size.width - padding * 2).coerceAtLeast(1f)
         val availableHeight = (size.height - padding * 2).coerceAtLeast(1f)
         val scale = minOf(availableWidth / spanX, availableHeight / spanY)
@@ -1381,19 +1405,22 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             y = top + (maxY - vertex.y) * scale
         )
 
+        val lineStroke = 2.2.dp.toPx().coerceAtLeast(2f)
         data.lines.forEach { line ->
-            val start = project(data.vertices[line.startVertex])
-            val end = project(data.vertices[line.endVertex])
+            val startVertex = data.vertices.getOrNull(line.startVertex) ?: return@forEach
+            val endVertex = data.vertices.getOrNull(line.endVertex) ?: return@forEach
+            val start = project(startVertex)
+            val end = project(endVertex)
             drawLine(
                 color = lineColor,
                 start = start,
                 end = end,
-                strokeWidth = 1.4f,
+                strokeWidth = lineStroke,
                 cap = StrokeCap.Round
             )
         }
 
-        val thingRadius = 2.8.dp.toPx().coerceAtLeast(2f)
+        val thingRadius = 3.5.dp.toPx().coerceAtLeast(3f)
         data.things.forEach { thing ->
             val point = project(WadMapVertex(thing.x, thing.y))
             drawCircle(
