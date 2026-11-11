@@ -48,6 +48,9 @@ object WadMapReader {
             "El nombre seleccionado no parece ser un marcador de mapa Doom clásico."
         }
 
+        require(mapLumps.none { it.name.equals("TEXTMAP", true) }) {
+            "Este mapa utiliza UDMF (TEXTMAP). Su geometría requiere un lector específico."
+        }
         val behavior = mapLumps.firstOrNull { it.name.equals("BEHAVIOR", true) }
         require(behavior == null) {
             "Este mapa contiene BEHAVIOR (formato Hexen). Su geometría requiere un lector específico."
