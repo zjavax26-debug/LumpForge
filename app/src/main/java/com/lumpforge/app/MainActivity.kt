@@ -1367,7 +1367,10 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
     var userPan by remember(data.mapName) { mutableStateOf(Offset.Zero) }
     var selectedLineIndex by remember(data.mapName) { mutableStateOf<Int?>(null) }
     var selectedThingIndex by remember(data.mapName) { mutableStateOf<Int?>(null) }
+    var selectedSectorIndex by remember(data.mapName) { mutableStateOf<Int?>(null) }
     var showElementDetails by remember(data.mapName) { mutableStateOf(false) }
+    var showSectorPicker by remember(data.mapName) { mutableStateOf(false) }
+    var showSectorDetails by remember(data.mapName) { mutableStateOf(false) }
 
     val usedVertexIndices = remember(data) {
         data.lines.asSequence()
@@ -1407,13 +1410,25 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                     userPan = Offset.Zero
                     selectedLineIndex = null
                     selectedThingIndex = null
+                    selectedSectorIndex = null
                     showElementDetails = false
+                    showSectorPicker = false
+                    showSectorDetails = false
                 },
                 enabled = userZoom != 1f || userPan != Offset.Zero ||
                     selectedLineIndex != null || selectedThingIndex != null
             ) {
                 Text("Restablecer")
             }
+        }
+    }
+
+    if (data.sectors.isNotEmpty()) {
+        TextButton(
+            onClick = { showSectorPicker = true },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Explorar sectores (${data.sectors.size})")
         }
     }
 
@@ -1591,22 +1606,56 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                 Text(if (selectedThing != null) "Propiedades del objeto" else "Propiedades de la línea")
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Column(
+                    modifier = Modifier.heightIn(max = 460.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
                     Text("Mapa: ${data.mapName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     if (selectedThing != null) {
-                        Text("Tipo de objeto: ${selectedThing.type}", fontWeight = FontWeight.SemiBold)
+                        val thingFlags = WadMapLabels.thingFlags(selectedThing.flags)
+                        Text(
+                            WadMapLabels.thingName(selectedThing.type),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text("DoomEd: #${selectedThing.type} · ${WadMapLabels.thingCategory(selectedThing.type)}")
                         Text("Posición X: ${selectedThing.x}")
                         Text("Posición Y: ${selectedThing.y}")
                         Text("Orientación: ${selectedThing.angle}°")
-                        Text("Flags: ${selectedThing.flags}")
+                        HorizontalDivider()
+                        Text("Flags: ${selectedThing.flags} (0x${selectedThing.flags.toString(16).uppercase().padStart(4, '0')})", fontWeight = FontWeight.SemiBold)
+                        thingFlags.labels.forEach { label ->
+                            Text("• $label")
+                        }
+                        if (thingFlags.unknownMask != 0) {
+                            Text(
+                                WadMapLabels.unknownFlags(thingFlags.unknownMask),
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                     } else if (selectedLine != null) {
+                        val lineFlags = WadMapLabels.lineFlags(selectedLine.flags)
                         Text("Vértice inicial: ${selectedLine.startVertex}")
                         Text("Vértice final: ${selectedLine.endVertex}")
-                        Text("Flags: ${selectedLine.flags}")
+                        Text(
+                            "Flags: ${selectedLine.flags} (0x${selectedLine.flags.toString(16).uppercase().padStart(4, '0')})",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        lineFlags.labels.forEach { label ->
+                            Text("• $label")
+                        }
+                        if (lineFlags.labels.isEmpty()) {
+                            Text("Sin flags de línea activados.")
+                        }
+                        if (lineFlags.unknownMask != 0) {
+                            Text(
+                                WadMapLabels.unknownFlags(lineFlags.unknownMask),
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                         Text("Especial: ${selectedLine.special}")
                         Text("Tag: ${selectedLine.tag}")
-                        Text("Lado frontal: ${selectedLine.rightSide}")
-                        Text("Lado posterior: ${selectedLine.leftSide}")
+                        Text("Lado frontal: ${if (selectedLine.rightSide == 0xffff) "Ninguno" else selectedLine.rightSide}")
+                        Text("Lado posterior: ${if (selectedLine.leftSide == 0xffff) "Ninguno" else selectedLine.leftSide}")
                         if (selectedLineSectors.isNotEmpty()) {
                             HorizontalDivider()
                             Text("Sectores adyacentes", fontWeight = FontWeight.SemiBold)
@@ -1616,7 +1665,16 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                                     Text("Suelo: ${sector.floorHeight} · ${sector.floorTexture}")
                                     Text("Techo: ${sector.ceilingHeight} · ${sector.ceilingTexture}")
                                     Text("Iluminación: ${sector.lightLevel}")
-                                    Text("Especial: ${sector.special} · Tag: ${sector.tag}")
+                                    Text("Especial: ${WadMapLabels.sectorSpecialName(sector.special)} · Tag: ${sector.tag}")
+                                    TextButton(
+                                        onClick = {
+                                            selectedSectorIndex = sectorIndex
+                                            showElementDetails = false
+                                            showSectorDetails = true
+                                        }
+                                    ) {
+                                        Text("Inspeccionar sector #$sectorIndex")
+                                    }
                                 }
                             }
                         } else {
@@ -1627,6 +1685,77 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             },
             confirmButton = {
                 TextButton(onClick = { showElementDetails = false }) {
+                    Text("Cerrar")
+                }
+            }
+        )
+    }
+
+    if (showSectorPicker) {
+        AlertDialog(
+            onDismissRequest = { showSectorPicker = false },
+            title = { Text("Sectores de ${data.mapName}") },
+            text = {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 440.dp)
+                ) {
+                    items(data.sectors.indices.toList()) { sectorIndex ->
+                        val sector = data.sectors[sectorIndex]
+                        TextButton(
+                            onClick = {
+                                selectedSectorIndex = sectorIndex
+                                showSectorPicker = false
+                                showSectorDetails = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text("Sector #$sectorIndex", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "Suelo ${sector.floorHeight} · Techo ${sector.ceilingHeight} · Luz ${sector.lightLevel}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "${sector.floorTexture} / ${sector.ceilingTexture}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSectorPicker = false }) {
+                    Text("Cerrar")
+                }
+            }
+        )
+    }
+
+    val selectedSector = selectedSectorIndex?.let(data.sectors::getOrNull)
+    if (showSectorDetails && selectedSector != null) {
+        AlertDialog(
+            onDismissRequest = { showSectorDetails = false },
+            title = { Text("Propiedades del sector #$selectedSectorIndex") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("Mapa: ${data.mapName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Altura del suelo: ${selectedSector.floorHeight}")
+                    Text("Textura del suelo: ${selectedSector.floorTexture}")
+                    Text("Altura del techo: ${selectedSector.ceilingHeight}")
+                    Text("Textura del techo: ${selectedSector.ceilingTexture}")
+                    Text("Iluminación: ${selectedSector.lightLevel} / 255")
+                    Text("Especial: ${WadMapLabels.sectorSpecialName(selectedSector.special)} (${selectedSector.special})")
+                    Text("Tag: ${selectedSector.tag}")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSectorDetails = false }) {
                     Text("Cerrar")
                 }
             }
