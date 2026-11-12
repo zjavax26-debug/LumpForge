@@ -51,43 +51,44 @@ object WadMapLabels {
         38 to "Llave de calavera roja",
         39 to "Llave de calavera amarilla",
         40 to "Llave de calavera azul",
-        41 to "Ojo maligno decorativo",
-        42 to "Calavera flotante decorativa",
-        43 to "Columna con corazón",
-        44 to "Columna con calavera",
-        45 to "Cuerpo colgante",
-        46 to "Cuerpo colgante",
-        47 to "Cuerpo colgante",
-        48 to "Cuerpo colgante",
-        49 to "Víctima colgante",
-        50 to "Charco de sangre",
-        51 to "Cerebros en el suelo",
-        52 to "Arma: escopeta de dos cañones",
-        53 to "Megasfera",
-        54 to "Soldado SS",
-        55 to "Árbol decorativo",
-        56 to "Antorcha azul",
-        57 to "Antorcha verde",
-        58 to "Demonio espectral",
-        59 to "Víctima colgante",
+        41 to "Ojo maligno",
+        42 to "Calavera flotante",
+        43 to "Árbol quemado",
+        44 to "Antorcha azul alta",
+        45 to "Antorcha verde alta",
+        46 to "Antorcha roja alta",
+        47 to "Estalagmita",
+        48 to "Columna tecnológica alta",
+        49 to "Víctima colgante retorciéndose",
+        50 to "Víctima colgante con brazos extendidos",
+        51 to "Víctima colgante con una pierna",
+        52 to "Piernas colgantes",
+        53 to "Pierna colgante",
+        54 to "Árbol marrón grande",
+        55 to "Antorcha azul baja",
+        56 to "Antorcha verde baja",
+        57 to "Antorcha roja baja",
+        58 to "Espectro",
+        59 to "Víctima colgante con brazos extendidos",
         60 to "Piernas colgantes",
-        61 to "Víctima colgante",
+        61 to "Víctima colgante con una pierna",
         62 to "Pierna colgante",
         63 to "Víctima colgante retorciéndose",
         64 to "Arch-vile",
-        65 to "Soldado con ametralladora",
+        65 to "Soldado pesado con ametralladora",
         66 to "Revenant",
         67 to "Mancubus",
         68 to "Arachnotron",
         69 to "Hell Knight",
+        70 to "Barril en llamas",
         71 to "Pain Elemental",
         72 to "Commander Keen",
-        73 to "Árbol grande",
-        74 to "Árbol pequeño",
-        75 to "Antorcha roja",
-        76 to "Antorcha verde",
-        77 to "Antorcha azul",
-        78 to "Árbol decorativo",
+        73 to "Víctima colgante sin vísceras",
+        74 to "Víctima colgante sin vísceras ni cerebro",
+        75 to "Torso colgante mirando hacia abajo",
+        76 to "Torso colgante con cráneo abierto",
+        77 to "Torso colgante mirando hacia arriba",
+        78 to "Torso colgante sin cerebro",
         79 to "Charco de sangre",
         80 to "Charco de sangre",
         81 to "Charco de cerebros",
@@ -134,10 +135,10 @@ object WadMapLabels {
 
     fun thingCategory(type: Int): String = when (type) {
         in 1..4, 11, 14 -> "Inicio / marcador"
-        in 5..6, 13, in 17..17, in 2007..2015, in 2018..2019,
-        in 2022..2026, 2045, in 2046..2049, 38, 39, 40, 52, 53, 82, 83 -> "Objeto / recogible"
-        in 7..9, 16, 58, in 64..72, 84, in 3001..3006 -> "Enemigo"
-        in 2001..2006 -> "Arma"
+        in 5..6, 8, 13, 17, in 2007..2015, in 2018..2019,
+        in 2022..2026, 2045, in 2046..2049, 38, 39, 40, 53, 83 -> "Objeto / recogible"
+        7, 9, 16, 58, in 64..69, 71, 72, 84, in 3001..3006 -> "Enemigo"
+        in 2001..2006, 82 -> "Arma"
         else -> "Decoración / otro"
     }
 
@@ -175,8 +176,22 @@ object WadMapLabels {
 
     fun sectorSpecialName(special: Int): String = when (special) {
         0 -> "Normal"
+        1 -> "Luz que parpadea aleatoriamente"
+        2 -> "Luz estroboscópica rápida (0,5 s)"
+        3 -> "Luz estroboscópica lenta (1 s)"
+        4 -> "Daño del 20 % y luz intermitente"
+        5 -> "Suelo dañino (10 %)"
+        7 -> "Suelo dañino (5 %)"
+        8 -> "Luz oscilante"
         9 -> "Secreto"
-        else -> "Especial de sector $special"
+        10 -> "Puerta: se cierra a los 30 s"
+        11 -> "Salida al morir con el efecto activo"
+        12 -> "Luz estroboscópica rápida sincronizada"
+        13 -> "Luz estroboscópica lenta sincronizada"
+        14 -> "Puerta: se abre a los 300 s"
+        16 -> "Suelo dañino (20 %)"
+        17 -> "Luz con parpadeo aleatorio"
+        else -> "Especial de sector $special (extensión o mod)"
     }
 
     fun unknownFlags(mask: Int): String =
