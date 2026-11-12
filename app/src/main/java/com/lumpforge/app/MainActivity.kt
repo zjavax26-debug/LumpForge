@@ -1367,6 +1367,7 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
     var userPan by remember(data.mapName) { mutableStateOf(Offset.Zero) }
     var selectedLineIndex by remember(data.mapName) { mutableStateOf<Int?>(null) }
     var selectedThingIndex by remember(data.mapName) { mutableStateOf<Int?>(null) }
+    var showElementDetails by remember(data.mapName) { mutableStateOf(false) }
 
     val usedVertexIndices = remember(data) {
         data.lines.asSequence()
@@ -1406,6 +1407,7 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                     userPan = Offset.Zero
                     selectedLineIndex = null
                     selectedThingIndex = null
+                    showElementDetails = false
                 },
                 enabled = userZoom != 1f || userPan != Offset.Zero ||
                     selectedLineIndex != null || selectedThingIndex != null
@@ -1473,6 +1475,7 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                     if (nearestThing != null) {
                         selectedThingIndex = nearestThing.first
                         selectedLineIndex = null
+                        showElementDetails = true
                     } else {
                         val nearestLine = data.lines.indices
                             .mapNotNull { index ->
@@ -1485,6 +1488,7 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                             .minByOrNull { it.second }
                         selectedLineIndex = nearestLine?.first
                         selectedThingIndex = null
+                        showElementDetails = nearestLine != null
                     }
                 }
             }
@@ -1544,50 +1548,16 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
 
     val selectedThing = selectedThingIndex?.let(data.things::getOrNull)
     val selectedLine = selectedLineIndex?.let(data.lines::getOrNull)
-    if (selectedThing != null) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text("Objeto seleccionado", fontWeight = FontWeight.SemiBold)
-            Text("Tipo: ${selectedThing.type} · Ángulo: ${selectedThing.angle}°")
-            Text("Posición: X ${selectedThing.x} · Y ${selectedThing.y}")
-            Text("Flags: ${selectedThing.flags}")
-        }
-    } else if (selectedLine != null) {
-        val sectors = listOf(selectedLine.rightSide, selectedLine.leftSide)
-            .filter { it != 0xffff }
-            .mapNotNull { sideIndex -> data.sideDefs.getOrNull(sideIndex)?.sectorIndex }
-            .distinct()
-            .mapNotNull { sectorIndex ->
-                data.sectors.getOrNull(sectorIndex)?.let { sectorIndex to it }
-            }
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
-            Text("Línea seleccionada", fontWeight = FontWeight.SemiBold)
-            Text("Vértices: ${selectedLine.startVertex} → ${selectedLine.endVertex}")
-            Text("Flags: ${selectedLine.flags} · Especial: ${selectedLine.special} · Tag: ${selectedLine.tag}")
-            Text("Lados: frente ${selectedLine.rightSide} · atrás ${selectedLine.leftSide}")
-            if (sectors.isNotEmpty()) {
-                Text("Sectores adyacentes", fontWeight = FontWeight.SemiBold)
-                sectors.forEach { (sectorIndex, sector) ->
-                    Text(
-                        "Sector $sectorIndex · suelo ${sector.floorHeight} (${sector.floorTexture}) · techo ${sector.ceilingHeight} (${sector.ceilingTexture}) · luz ${sector.lightLevel}"
-                    )
+    val selectedLineSectors = remember(selectedLine, data.sideDefs, data.sectors) {
+        selectedLine?.let { line ->
+            listOf(line.rightSide, line.leftSide)
+                .filter { it != 0xffff }
+                .mapNotNull { sideIndex -> data.sideDefs.getOrNull(sideIndex)?.sectorIndex }
+                .distinct()
+                .mapNotNull { sectorIndex ->
+                    data.sectors.getOrNull(sectorIndex)?.let { sectorIndex to it }
                 }
-            } else {
-                Text("No se pudieron resolver los sectores de esta línea.")
-            }
-        }
-    } else {
-        Text(
-            "Toca una línea o un objeto para consultar sus propiedades.",
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        }.orEmpty()
     }
 
     Row(
@@ -1611,6 +1581,55 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             "Toca elementos · Pellizca para zoom · Arrastra para mover",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    if (showElementDetails && (selectedThing != null || selectedLine != null)) {
+        AlertDialog(
+            onDismissRequest = { showElementDetails = false },
+            title = {
+                Text(if (selectedThing != null) "Propiedades del objeto" else "Propiedades de la línea")
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("Mapa: ${data.mapName}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (selectedThing != null) {
+                        Text("Tipo de objeto: ${selectedThing.type}", fontWeight = FontWeight.SemiBold)
+                        Text("Posición X: ${selectedThing.x}")
+                        Text("Posición Y: ${selectedThing.y}")
+                        Text("Orientación: ${selectedThing.angle}°")
+                        Text("Flags: ${selectedThing.flags}")
+                    } else if (selectedLine != null) {
+                        Text("Vértice inicial: ${selectedLine.startVertex}")
+                        Text("Vértice final: ${selectedLine.endVertex}")
+                        Text("Flags: ${selectedLine.flags}")
+                        Text("Especial: ${selectedLine.special}")
+                        Text("Tag: ${selectedLine.tag}")
+                        Text("Lado frontal: ${selectedLine.rightSide}")
+                        Text("Lado posterior: ${selectedLine.leftSide}")
+                        if (selectedLineSectors.isNotEmpty()) {
+                            HorizontalDivider()
+                            Text("Sectores adyacentes", fontWeight = FontWeight.SemiBold)
+                            selectedLineSectors.forEach { (sectorIndex, sector) ->
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text("Sector #$sectorIndex", fontWeight = FontWeight.SemiBold)
+                                    Text("Suelo: ${sector.floorHeight} · ${sector.floorTexture}")
+                                    Text("Techo: ${sector.ceilingHeight} · ${sector.ceilingTexture}")
+                                    Text("Iluminación: ${sector.lightLevel}")
+                                    Text("Especial: ${sector.special} · Tag: ${sector.tag}")
+                                }
+                            }
+                        } else {
+                            Text("No se pudieron resolver los sectores adyacentes.")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showElementDetails = false }) {
+                    Text("Cerrar")
+                }
+            }
         )
     }
 }
