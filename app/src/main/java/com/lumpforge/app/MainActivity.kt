@@ -12,6 +12,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -1356,12 +1357,16 @@ private fun WadContents(
 @Composable
 private fun MapPreviewCanvas(data: WadMapPreviewData) {
     val lineColor = MaterialTheme.colorScheme.onSurface
+    val selectedColor = MaterialTheme.colorScheme.primary
     val thingColor = MaterialTheme.colorScheme.tertiary
     val backgroundColor = MaterialTheme.colorScheme.surfaceVariant
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
 
     var showThings by remember(data.mapName) { mutableStateOf(true) }
     var userZoom by remember(data.mapName) { mutableStateOf(1f) }
     var userPan by remember(data.mapName) { mutableStateOf(Offset.Zero) }
+    var selectedLineIndex by remember(data.mapName) { mutableStateOf<Int?>(null) }
+    var selectedThingIndex by remember(data.mapName) { mutableStateOf<Int?>(null) }
 
     val usedVertexIndices = remember(data) {
         data.lines.asSequence()
@@ -1399,8 +1404,11 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                 onClick = {
                     userZoom = 1f
                     userPan = Offset.Zero
+                    selectedLineIndex = null
+                    selectedThingIndex = null
                 },
-                enabled = userZoom != 1f || userPan != Offset.Zero
+                enabled = userZoom != 1f || userPan != Offset.Zero ||
+                    selectedLineIndex != null || selectedThingIndex != null
             ) {
                 Text("Restablecer")
             }
@@ -1418,10 +1426,71 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                     userPan = userPan + pan
                 }
             }
+            .pointerInput(data, userZoom, userPan, showThings) {
+                detectTapGestures { tap ->
+                    val minX = usedVertices.minOf { it.x }.toFloat()
+                    val maxX = usedVertices.maxOf { it.x }.toFloat()
+                    val minY = usedVertices.minOf { it.y }.toFloat()
+                    val maxY = usedVertices.maxOf { it.y }.toFloat()
+                    val spanX = (maxX - minX).coerceAtLeast(1f)
+                    val spanY = (maxY - minY).coerceAtLeast(1f)
+                    val padding = 18f * density
+                    val availableWidth = (size.width - padding * 2).coerceAtLeast(1f)
+                    val availableHeight = (size.height - padding * 2).coerceAtLeast(1f)
+                    val scale = minOf(availableWidth / spanX, availableHeight / spanY)
+                    val contentWidth = spanX * scale
+                    val contentHeight = spanY * scale
+                    val left = (size.width - contentWidth) / 2f
+                    val top = (size.height - contentHeight) / 2f
+                    val center = Offset(size.width / 2f, size.height / 2f)
+
+                    fun project(x: Int, y: Int): Offset {
+                        val fitted = Offset(
+                            left + (x - minX) * scale,
+                            top + (maxY - y) * scale
+                        )
+                        return center + (fitted - center) * userZoom + userPan
+                    }
+
+                    fun distanceToSegment(point: Offset, a: Offset, b: Offset): Float {
+                        val dx = b.x - a.x
+                        val dy = b.y - a.y
+                        val lengthSquared = dx * dx + dy * dy
+                        if (lengthSquared <= 0.001f) return (point - a).getDistance()
+                        val t = (((point.x - a.x) * dx + (point.y - a.y) * dy) /
+                            lengthSquared).coerceIn(0f, 1f)
+                        val closest = Offset(a.x + t * dx, a.y + t * dy)
+                        return (point - closest).getDistance()
+                    }
+
+                    val nearestThing = if (showThings) {
+                        data.things.indices
+                            .map { index -> index to (tap - project(data.things[index].x, data.things[index].y)).getDistance() }
+                            .filter { it.second <= 22f * density }
+                            .minByOrNull { it.second }
+                    } else null
+
+                    if (nearestThing != null) {
+                        selectedThingIndex = nearestThing.first
+                        selectedLineIndex = null
+                    } else {
+                        val nearestLine = data.lines.indices
+                            .mapNotNull { index ->
+                                val line = data.lines[index]
+                                val a = data.vertices.getOrNull(line.startVertex) ?: return@mapNotNull null
+                                val b = data.vertices.getOrNull(line.endVertex) ?: return@mapNotNull null
+                                index to distanceToSegment(tap, project(a.x, a.y), project(b.x, b.y))
+                            }
+                            .filter { it.second <= 18f * density }
+                            .minByOrNull { it.second }
+                        selectedLineIndex = nearestLine?.first
+                        selectedThingIndex = null
+                    }
+                }
+            }
     ) {
         drawRect(color = backgroundColor)
 
-        // Fit to vertices used by LINEDEFS, not unused outliers.
         val minX = usedVertices.minOf { it.x }.toFloat()
         val maxX = usedVertices.maxOf { it.x }.toFloat()
         val minY = usedVertices.minOf { it.y }.toFloat()
@@ -1447,29 +1516,76 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
         }
 
         val lineStroke = 2.dp.toPx().coerceAtLeast(1.5f)
-        data.lines.forEach { line ->
-            val startVertex = data.vertices.getOrNull(line.startVertex) ?: return@forEach
-            val endVertex = data.vertices.getOrNull(line.endVertex) ?: return@forEach
+        data.lines.forEachIndexed { index, line ->
+            val startVertex = data.vertices.getOrNull(line.startVertex) ?: return@forEachIndexed
+            val endVertex = data.vertices.getOrNull(line.endVertex) ?: return@forEachIndexed
+            val isSelected = selectedLineIndex == index
             drawLine(
-                color = lineColor,
+                color = if (isSelected) selectedColor else lineColor,
                 start = project(startVertex),
                 end = project(endVertex),
-                strokeWidth = lineStroke,
+                strokeWidth = if (isSelected) lineStroke * 2.5f else lineStroke,
                 cap = StrokeCap.Round
             )
         }
 
         if (showThings) {
-            // Small markers preserve the geometry underneath in dense rooms.
             val thingRadius = 1.6.dp.toPx().coerceAtLeast(1f)
-            data.things.forEach { thing ->
+            data.things.forEachIndexed { index, thing ->
+                val isSelected = selectedThingIndex == index
                 drawCircle(
-                    color = thingColor.copy(alpha = 0.72f),
-                    radius = thingRadius,
+                    color = if (isSelected) selectedColor else thingColor.copy(alpha = 0.72f),
+                    radius = if (isSelected) thingRadius * 3f else thingRadius,
                     center = project(WadMapVertex(thing.x, thing.y))
                 )
             }
         }
+    }
+
+    val selectedThing = selectedThingIndex?.let(data.things::getOrNull)
+    val selectedLine = selectedLineIndex?.let(data.lines::getOrNull)
+    if (selectedThing != null) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text("Objeto seleccionado", fontWeight = FontWeight.SemiBold)
+            Text("Tipo: ${selectedThing.type} · Ángulo: ${selectedThing.angle}°")
+            Text("Posición: X ${selectedThing.x} · Y ${selectedThing.y}")
+            Text("Flags: ${selectedThing.flags}")
+        }
+    } else if (selectedLine != null) {
+        val sectorIndices = listOf(selectedLine.rightSide, selectedLine.leftSide)
+            .filter { it != 0xffff }
+            .mapNotNull { sideIndex -> data.sideDefs.getOrNull(sideIndex)?.sectorIndex }
+            .distinct()
+        val sectors = sectorIndices.mapNotNull(data.sectors::getOrNull)
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            Text("Línea seleccionada", fontWeight = FontWeight.SemiBold)
+            Text("Vértices: ${selectedLine.startVertex} → ${selectedLine.endVertex}")
+            Text("Flags: ${selectedLine.flags} · Especial: ${selectedLine.special} · Tag: ${selectedLine.tag}")
+            Text("Lados: frente ${selectedLine.rightSide} · atrás ${selectedLine.leftSide}")
+            if (sectors.isNotEmpty()) {
+                Text("Sectores adyacentes", fontWeight = FontWeight.SemiBold)
+                sectors.forEachIndexed { index, sector ->
+                    Text(
+                        "Sector ${sectorIndices[index]} · suelo ${sector.floorHeight} (${sector.floorTexture}) · techo ${sector.ceilingHeight} (${sector.ceilingTexture}) · luz ${sector.lightLevel}"
+                    )
+                }
+            } else {
+                Text("No se pudieron resolver los sectores de esta línea.")
+            }
+        }
+    } else {
+        Text(
+            "Toca una línea o un objeto para consultar sus propiedades.",
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 
     Row(
@@ -1490,7 +1606,7 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             )
         }
         Text(
-            "Pellizca para zoom · Arrastra para mover",
+            "Toca elementos · Pellizca para zoom · Arrastra para mover",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
