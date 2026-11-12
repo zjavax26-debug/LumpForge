@@ -5,8 +5,24 @@ data class WadMapVertex(val x: Int, val y: Int)
 data class WadMapLine(
     val startVertex: Int,
     val endVertex: Int,
-    val flags: Int
+    val flags: Int,
+    val special: Int,
+    val tag: Int,
+    val rightSide: Int,
+    val leftSide: Int
 )
+
+data class WadMapSector(
+    val floorHeight: Int,
+    val ceilingHeight: Int,
+    val floorTexture: String,
+    val ceilingTexture: String,
+    val lightLevel: Int,
+    val special: Int,
+    val tag: Int
+)
+
+data class WadMapSideDef(val sectorIndex: Int)
 
 data class WadMapThing(
     val x: Int,
@@ -21,6 +37,8 @@ data class WadMapPreviewData(
     val vertices: List<WadMapVertex>,
     val lines: List<WadMapLine>,
     val things: List<WadMapThing>,
+    val sideDefs: List<WadMapSideDef>,
+    val sectors: List<WadMapSector>,
     val sectorCount: Int,
     val invalidLineCount: Int
 )
@@ -103,7 +121,15 @@ object WadMapReader {
             val end = unsigned16(lineBytes, offset + 2)
             val flags = unsigned16(lineBytes, offset + 4)
             if (start < vertices.size && end < vertices.size && start != end) {
-                lines += WadMapLine(start, end, flags)
+                lines += WadMapLine(
+                    startVertex = start,
+                    endVertex = end,
+                    flags = flags,
+                    special = unsigned16(lineBytes, offset + 6),
+                    tag = unsigned16(lineBytes, offset + 8),
+                    rightSide = unsigned16(lineBytes, offset + 10),
+                    leftSide = unsigned16(lineBytes, offset + 12)
+                )
             } else {
                 invalidLines++
             }
@@ -142,15 +168,48 @@ object WadMapReader {
             }
         }
 
+        val sideDefLump = mapLumps.lastOrNull { it.name.equals("SIDEDEFS", true) }
+        val sideDefs = if (sideDefLump == null || sideDefLump.size == 0L) {
+            emptyList()
+        } else {
+            val sideBytes = bytes(sideDefLump)
+            require(sideBytes.size % 30 == 0) {
+                "SIDEDEFS no coincide con registros Doom clásicos de 30 bytes."
+            }
+            buildList(sideBytes.size / 30) {
+                var p = 0
+                while (p < sideBytes.size) {
+                    add(WadMapSideDef(sectorIndex = unsigned16(sideBytes, p + 28)))
+                    p += 30
+                }
+            }
+        }
+
         val sectorLump = mapLumps.lastOrNull { it.name.equals("SECTORS", true) }
-        val sectorCount = if (sectorLump == null || sectorLump.size == 0L) {
-            0
+        val sectors = if (sectorLump == null || sectorLump.size == 0L) {
+            emptyList()
         } else {
             val sectorBytes = bytes(sectorLump)
             require(sectorBytes.size % 26 == 0) {
                 "SECTORS no coincide con registros Doom clásicos de 26 bytes."
             }
-            sectorBytes.size / 26
+            buildList(sectorBytes.size / 26) {
+                var p = 0
+                while (p < sectorBytes.size) {
+                    add(
+                        WadMapSector(
+                            floorHeight = signed16(sectorBytes, p),
+                            ceilingHeight = signed16(sectorBytes, p + 2),
+                            floorTexture = fixedName(sectorBytes, p + 4, 8),
+                            ceilingTexture = fixedName(sectorBytes, p + 12, 8),
+                            lightLevel = unsigned16(sectorBytes, p + 20),
+                            special = unsigned16(sectorBytes, p + 22),
+                            tag = unsigned16(sectorBytes, p + 24)
+                        )
+                    )
+                    p += 26
+                }
+            }
         }
 
         return WadMapPreviewData(
@@ -158,13 +217,22 @@ object WadMapReader {
             vertices = vertices,
             lines = lines,
             things = things,
-            sectorCount = sectorCount,
+            sideDefs = sideDefs,
+            sectors = sectors,
+            sectorCount = sectors.size,
             invalidLineCount = invalidLines
         )
     }
 
     fun isMapMarker(name: String): Boolean =
         name.matches(Regex("(?i)(MAP[0-9]{2}|E[1-4]M[1-9][0-9]?)"))
+
+    private fun fixedName(bytes: ByteArray, offset: Int, length: Int): String =
+        bytes.copyOfRange(offset, offset + length)
+            .takeWhile { it.toInt() != 0 }
+            .toByteArray()
+            .toString(Charsets.US_ASCII)
+            .trim()
 
     private fun unsigned16(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or
