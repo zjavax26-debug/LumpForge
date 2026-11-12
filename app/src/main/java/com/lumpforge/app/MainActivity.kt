@@ -1555,11 +1555,13 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             Text("Flags: ${selectedThing.flags}")
         }
     } else if (selectedLine != null) {
-        val sectorIndices = listOf(selectedLine.rightSide, selectedLine.leftSide)
+        val sectors = listOf(selectedLine.rightSide, selectedLine.leftSide)
             .filter { it != 0xffff }
             .mapNotNull { sideIndex -> data.sideDefs.getOrNull(sideIndex)?.sectorIndex }
             .distinct()
-        val sectors = sectorIndices.mapNotNull(data.sectors::getOrNull)
+            .mapNotNull { sectorIndex ->
+                data.sectors.getOrNull(sectorIndex)?.let { sectorIndex to it }
+            }
         Column(
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -1570,9 +1572,9 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             Text("Lados: frente ${selectedLine.rightSide} · atrás ${selectedLine.leftSide}")
             if (sectors.isNotEmpty()) {
                 Text("Sectores adyacentes", fontWeight = FontWeight.SemiBold)
-                sectors.forEachIndexed { index, sector ->
+                sectors.forEach { (sectorIndex, sector) ->
                     Text(
-                        "Sector ${sectorIndices[index]} · suelo ${sector.floorHeight} (${sector.floorTexture}) · techo ${sector.ceilingHeight} (${sector.ceilingTexture}) · luz ${sector.lightLevel}"
+                        "Sector $sectorIndex · suelo ${sector.floorHeight} (${sector.floorTexture}) · techo ${sector.ceilingHeight} (${sector.ceilingTexture}) · luz ${sector.lightLevel}"
                     )
                 }
             } else {
