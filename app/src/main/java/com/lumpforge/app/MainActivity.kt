@@ -52,6 +52,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -1410,6 +1411,7 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
         modifier = Modifier
             .fillMaxWidth()
             .height(320.dp)
+            .clipToBounds()
             .pointerInput(data.mapName) {
                 detectTransformGestures { _, pan, zoomChange, _ ->
                     userZoom = (userZoom * zoomChange).coerceIn(1f, 12f)
