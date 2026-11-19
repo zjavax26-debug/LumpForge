@@ -1381,6 +1381,14 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
     val usedVertices = remember(data, usedVertexIndices) {
         usedVertexIndices.mapNotNull(data.vertices::getOrNull)
     }
+    val geometryIndex = remember(data) {
+        WadMapGeometryIndex.build(data)
+    }
+    val selectedSectorBoundaryLines = remember(geometryIndex, selectedSectorIndex) {
+        selectedSectorIndex?.let {
+            geometryIndex.sectorBoundaryLineIndices.getOrNull(it)
+        }.orEmpty()
+    }
 
     if (usedVertices.isEmpty()) {
         Text(
@@ -1416,7 +1424,8 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                     showSectorDetails = false
                 },
                 enabled = userZoom != 1f || userPan != Offset.Zero ||
-                    selectedLineIndex != null || selectedThingIndex != null
+                    selectedLineIndex != null || selectedThingIndex != null ||
+                    selectedSectorIndex != null
             ) {
                 Text("Restablecer")
             }
@@ -1443,7 +1452,7 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                     userPan = userPan + pan
                 }
             }
-            .pointerInput(data, userZoom, userPan, showThings) {
+            .pointerInput(data, geometryIndex, userZoom, userPan, showThings) {
                 detectTapGestures { tap ->
                     val minX = usedVertices.minOf { it.x }.toFloat()
                     val maxX = usedVertices.maxOf { it.x }.toFloat()
@@ -1490,6 +1499,8 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                     if (nearestThing != null) {
                         selectedThingIndex = nearestThing.first
                         selectedLineIndex = null
+                        selectedSectorIndex = null
+                        showSectorDetails = false
                         showElementDetails = true
                     } else {
                         val nearestLine = data.lines.indices
@@ -1501,9 +1512,40 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
                             }
                             .filter { it.second <= 18f * density }
                             .minByOrNull { it.second }
-                        selectedLineIndex = nearestLine?.first
-                        selectedThingIndex = null
-                        showElementDetails = nearestLine != null
+
+                        if (nearestLine != null) {
+                            selectedLineIndex = nearestLine.first
+                            selectedThingIndex = null
+                            selectedSectorIndex = null
+                            showSectorDetails = false
+                            showElementDetails = true
+                        } else {
+                            // Undo fit + zoom + pan to convert this screen tap
+                            // back into the original Doom map coordinate system.
+                            val fittedTap = Offset(
+                                center.x + (tap.x - center.x - userPan.x) / userZoom,
+                                center.y + (tap.y - center.y - userPan.y) / userZoom
+                            )
+                            val insideMapBounds =
+                                fittedTap.x >= left && fittedTap.x <= left + contentWidth &&
+                                fittedTap.y >= top && fittedTap.y <= top + contentHeight
+
+                            val hitSector = if (insideMapBounds) {
+                                val mapX = minX + (fittedTap.x - left) / scale
+                                val mapY = maxY - (fittedTap.y - top) / scale
+                                geometryIndex.findSectorAtPoint(data, mapX, mapY)
+                            } else {
+                                null
+                            }
+
+                            if (hitSector != null) {
+                                selectedSectorIndex = hitSector
+                                selectedLineIndex = null
+                                selectedThingIndex = null
+                                showElementDetails = false
+                                showSectorDetails = true
+                            }
+                        }
                     }
                 }
             }
@@ -1539,11 +1581,20 @@ private fun MapPreviewCanvas(data: WadMapPreviewData) {
             val startVertex = data.vertices.getOrNull(line.startVertex) ?: return@forEachIndexed
             val endVertex = data.vertices.getOrNull(line.endVertex) ?: return@forEachIndexed
             val isSelected = selectedLineIndex == index
+            val isSectorBoundary = index in selectedSectorBoundaryLines
             drawLine(
-                color = if (isSelected) selectedColor else lineColor,
+                color = when {
+                    isSelected -> selectedColor
+                    isSectorBoundary -> selectedColor.copy(alpha = 0.82f)
+                    else -> lineColor
+                },
                 start = project(startVertex),
                 end = project(endVertex),
-                strokeWidth = if (isSelected) lineStroke * 2.5f else lineStroke,
+                strokeWidth = when {
+                    isSelected -> lineStroke * 2.5f
+                    isSectorBoundary -> lineStroke * 1.9f
+                    else -> lineStroke
+                },
                 cap = StrokeCap.Round
             )
         }
