@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -35,6 +36,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
@@ -140,6 +143,8 @@ private fun LumpForgeApp() {
     var pendingMidiBytes by remember { mutableStateOf<ByteArray?>(null) }
     val coroutineScope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(false) }
+    var isSavingMap by remember { mutableStateOf(false) }
+    var pendingMapToSelect by remember { mutableStateOf<String?>(null) }
 
     suspend fun stopCurrentMusic() {
         musicPlaybackMonitor?.cancel()
@@ -407,6 +412,129 @@ private fun LumpForgeApp() {
         pendingMidiBytes = null
     }
 
+
+    val saveSectorEdit: (Int, WadMapSector) -> Unit = { sectorIndex, editedSector ->
+        coroutineScope.launch {
+            if (isSavingMap) return@launch
+            isSavingMap = true
+            try {
+                val sourceWad = openedWad
+                    ?: throw IllegalStateException("No hay un WAD abierto.")
+                val archive = wadArchive
+                    ?: throw IllegalStateException("El directorio WAD todavía no está cargado.")
+                val mapData = mapPreviewData
+                    ?: throw IllegalStateException("No hay un mapa clásico seleccionado.")
+                val mapMarker = selectedLump
+                    ?: throw IllegalStateException("Selecciona primero un marcador de mapa.")
+                require(
+                    mapMarker.name.equals(mapData.mapName, ignoreCase = true) &&
+                        WadMapReader.isMapMarker(mapMarker.name)
+                ) { "El mapa seleccionado cambió. Vuelve a seleccionarlo antes de guardar." }
+
+                val markerPosition = archive.lumps.indexOfFirst { it.index == mapMarker.index }
+                require(markerPosition >= 0) {
+                    "No se pudo localizar el marcador " + mapData.mapName + " en el WAD."
+                }
+                val mapLumps = archive.lumps.drop(markerPosition + 1)
+                    .takeWhile { !WadMapReader.isMapMarker(it.name) }
+                val sectorsLump = mapLumps.lastOrNull {
+                    it.name.equals("SECTORS", ignoreCase = true)
+                } ?: throw IllegalStateException("El mapa no contiene el recurso SECTORS.")
+
+                require(sectorsLump.size % WadSectorCodec.RECORD_SIZE == 0L) {
+                    "El recurso SECTORS no usa registros Doom clásicos de 26 bytes."
+                }
+                val sectorCount = sectorsLump.size / WadSectorCodec.RECORD_SIZE
+                require(sectorIndex >= 0 && sectorIndex.toLong() < sectorCount) {
+                    "El sector seleccionado no existe en el recurso SECTORS."
+                }
+
+                val patchOffset = sectorsLump.offset +
+                    sectorIndex.toLong() * WadSectorCodec.RECORD_SIZE
+                val replacement = WadSectorCodec.encode(editedSector)
+                val destinationFolder = sourceWad.document.parentFile ?: currentFolder
+                    ?: throw IllegalStateException("No se encontró la carpeta para guardar la copia.")
+                val baseName = sourceWad.name.substringBeforeLast('.', sourceWad.name)
+                val outputName = baseName + "_editado.wad"
+
+                val savedDocument = withContext(Dispatchers.IO) {
+                    val output = WadPatchWriter.copyWithPatch(
+                        context = context,
+                        sourceUri = sourceWad.document.uri,
+                        sourceSize = sourceWad.size,
+                        destinationFolder = destinationFolder,
+                        requestedName = outputName,
+                        patchOffset = patchOffset,
+                        replacement = replacement
+                    )
+                    try {
+                        val outputSize = output.length().takeIf { it > 0L } ?: sourceWad.size
+                        val outputInput = context.contentResolver.openInputStream(output.uri)
+                            ?: throw IllegalStateException("No se pudo verificar la copia guardada.")
+                        val verifiedArchive = outputInput.use { WadReader.read(it, outputSize) }
+                        val verifiedMarkerPosition = verifiedArchive.lumps.indexOfFirst {
+                            it.name.equals(mapData.mapName, ignoreCase = true) &&
+                                WadMapReader.isMapMarker(it.name)
+                        }
+                        require(verifiedMarkerPosition >= 0) {
+                            "La copia no conserva el marcador " + mapData.mapName + "."
+                        }
+                        val verifiedMapLumps = verifiedArchive.lumps
+                            .drop(verifiedMarkerPosition + 1)
+                            .takeWhile { !WadMapReader.isMapMarker(it.name) }
+                        val verifiedEntry = BrowserEntry(
+                            document = output,
+                            name = output.name ?: outputName,
+                            isDirectory = false,
+                            size = outputSize,
+                            mimeType = output.type
+                        )
+                        val verifiedMap = WadMapReader.parse(
+                            mapData.mapName,
+                            verifiedMapLumps
+                        ) { lump ->
+                            readWadBytes(
+                                context,
+                                verifiedEntry,
+                                lump.offset,
+                                lump.size.toInt()
+                            )
+                        }
+                        require(verifiedMap.sectors.getOrNull(sectorIndex) == editedSector) {
+                            "La verificación no encontró los valores nuevos en el sector guardado."
+                        }
+                        output
+                    } catch (error: Exception) {
+                        output.delete()
+                        throw error
+                    }
+                }
+
+                val savedSize = savedDocument.length().takeIf { it > 0L } ?: sourceWad.size
+                val savedEntry = BrowserEntry(
+                    document = savedDocument,
+                    name = savedDocument.name ?: outputName,
+                    isDirectory = false,
+                    size = savedSize,
+                    mimeType = savedDocument.type
+                )
+                entries = (entries.filterNot { it.document.uri == savedDocument.uri } + savedEntry)
+                    .sortedWith(
+                        compareByDescending<BrowserEntry> { it.isDirectory }
+                            .thenBy { it.name.lowercase(Locale.ROOT) }
+                    )
+                pendingMapToSelect = mapData.mapName
+                openedWad = savedEntry
+                previewMessage = "Sector #" + sectorIndex + " guardado y verificado en " +
+                    savedEntry.name + ". El WAD original permanece intacto."
+            } catch (error: Exception) {
+                previewMessage = error.localizedMessage ?: "No se pudo guardar la copia editada."
+            } finally {
+                isSavingMap = false
+            }
+        }
+    }
+
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
@@ -486,6 +614,13 @@ private fun LumpForgeApp() {
                 input.use { WadReader.read(it, wad.size) }
             }
             wadArchive = parsed
+            pendingMapToSelect?.let { mapName ->
+                selectedLump = parsed.lumps.firstOrNull {
+                    it.name.equals(mapName, ignoreCase = true) &&
+                        WadMapReader.isMapMarker(it.name)
+                }
+                pendingMapToSelect = null
+            }
             if (parsed.format == "IWAD") {
                 val paletteLump = parsed.lumps.lastOrNull {
                     it.name.equals("PLAYPAL", ignoreCase = true)
@@ -1020,7 +1155,9 @@ private fun LumpForgeApp() {
                                     "${selectedLump?.name?.ifBlank { "DoomMusic" } ?: "DoomMusic"}.mid"
                                 )
                             }
-                        }
+                        },
+                        isSavingMap = isSavingMap,
+                        onSaveSector = saveSectorEdit
                     )
                 }
 
@@ -1116,7 +1253,9 @@ private fun WadContents(
     onSelect: (WadLump) -> Unit,
     onSelectTexture: (WadTextureDefinition) -> Unit,
     onToggleSoundPlayback: (WadLump) -> Unit,
-    onExportMusic: () -> Unit
+    onExportMusic: () -> Unit,
+    isSavingMap: Boolean,
+    onSaveSector: (Int, WadMapSector) -> Unit
 ) {
     var showTexturePicker by remember { mutableStateOf(false) }
 
@@ -1293,7 +1432,11 @@ private fun WadContents(
                             "Vista previa 2D · ${mapData.mapName}",
                             fontWeight = FontWeight.SemiBold
                         )
-                        MapPreviewCanvas(mapData)
+                        MapPreviewCanvas(
+                            data = mapData,
+                            isSavingMap = isSavingMap,
+                            onSaveSector = onSaveSector
+                        )
                         Text(
                             "Líneas del mapa y posiciones de objetos. La vista texturizada y las alturas se incorporarán en otra etapa.",
                             style = MaterialTheme.typography.labelSmall,
@@ -1355,7 +1498,11 @@ private fun WadContents(
 }
 
 @Composable
-private fun MapPreviewCanvas(data: WadMapPreviewData) {
+private fun MapPreviewCanvas(
+    data: WadMapPreviewData,
+    isSavingMap: Boolean,
+    onSaveSector: (Int, WadMapSector) -> Unit
+) {
     val lineColor = MaterialTheme.colorScheme.onSurface
     val selectedColor = MaterialTheme.colorScheme.primary
     val thingColor = MaterialTheme.colorScheme.tertiary
