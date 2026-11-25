@@ -1518,6 +1518,15 @@ private fun MapPreviewCanvas(
     var showElementDetails by remember(data.mapName) { mutableStateOf(false) }
     var showSectorPicker by remember(data.mapName) { mutableStateOf(false) }
     var showSectorDetails by remember(data.mapName) { mutableStateOf(false) }
+    var showSectorEditor by remember(data.mapName) { mutableStateOf(false) }
+    var sectorEditFloorHeight by remember(data.mapName) { mutableStateOf("") }
+    var sectorEditCeilingHeight by remember(data.mapName) { mutableStateOf("") }
+    var sectorEditFloorTexture by remember(data.mapName) { mutableStateOf("") }
+    var sectorEditCeilingTexture by remember(data.mapName) { mutableStateOf("") }
+    var sectorEditLightLevel by remember(data.mapName) { mutableStateOf("") }
+    var sectorEditSpecial by remember(data.mapName) { mutableStateOf("") }
+    var sectorEditTag by remember(data.mapName) { mutableStateOf("") }
+    var sectorEditError by remember(data.mapName) { mutableStateOf<String?>(null) }
 
     val usedVertexIndices = remember(data) {
         data.lines.asSequence()
@@ -1569,6 +1578,7 @@ private fun MapPreviewCanvas(
                     showElementDetails = false
                     showSectorPicker = false
                     showSectorDetails = false
+                    showSectorEditor = false
                 },
                 enabled = userZoom != 1f || userPan != Offset.Zero ||
                     selectedLineIndex != null || selectedThingIndex != null ||
@@ -1936,6 +1946,155 @@ private fun MapPreviewCanvas(
     }
 
     val selectedSector = selectedSectorIndex?.let(data.sectors::getOrNull)
+    if (showSectorEditor && selectedSector != null && selectedSectorIndex != null) {
+        AlertDialog(
+            onDismissRequest = {
+                if (!isSavingMap) {
+                    showSectorEditor = false
+                    showSectorDetails = true
+                }
+            },
+            title = { Text("Editar sector #$selectedSectorIndex") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "Los cambios se guardarán en una copia nueva del WAD. El archivo original no se modificará.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = sectorEditFloorHeight,
+                        onValueChange = { sectorEditFloorHeight = it; sectorEditError = null },
+                        label = { Text("Altura del suelo") },
+                        singleLine = true,
+                        enabled = !isSavingMap,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = sectorEditCeilingHeight,
+                        onValueChange = { sectorEditCeilingHeight = it; sectorEditError = null },
+                        label = { Text("Altura del techo") },
+                        singleLine = true,
+                        enabled = !isSavingMap,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = sectorEditFloorTexture,
+                        onValueChange = {
+                            sectorEditFloorTexture = it.uppercase(Locale.ROOT)
+                            sectorEditError = null
+                        },
+                        label = { Text("Textura del suelo (máximo 8 caracteres)") },
+                        singleLine = true,
+                        enabled = !isSavingMap,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = sectorEditCeilingTexture,
+                        onValueChange = {
+                            sectorEditCeilingTexture = it.uppercase(Locale.ROOT)
+                            sectorEditError = null
+                        },
+                        label = { Text("Textura del techo (máximo 8 caracteres)") },
+                        singleLine = true,
+                        enabled = !isSavingMap,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = sectorEditLightLevel,
+                        onValueChange = { sectorEditLightLevel = it; sectorEditError = null },
+                        label = { Text("Iluminación (0–255)") },
+                        singleLine = true,
+                        enabled = !isSavingMap,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = sectorEditSpecial,
+                        onValueChange = { sectorEditSpecial = it; sectorEditError = null },
+                        label = { Text("Especial (0–65535)") },
+                        singleLine = true,
+                        enabled = !isSavingMap,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = sectorEditTag,
+                        onValueChange = { sectorEditTag = it; sectorEditError = null },
+                        label = { Text("Tag (0–65535)") },
+                        singleLine = true,
+                        enabled = !isSavingMap,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    sectorEditError?.let { message ->
+                        Text(
+                            message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    if (isSavingMap) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                            Text("Creando y verificando la copia…")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            showSectorEditor = false
+                            showSectorDetails = true
+                        },
+                        enabled = !isSavingMap
+                    ) {
+                        Text("Cancelar")
+                    }
+                    Button(
+                        enabled = !isSavingMap,
+                        onClick = {
+                            try {
+                                val sectorIndex = selectedSectorIndex
+                                    ?: throw IllegalStateException("No hay un sector seleccionado.")
+                                val updated = selectedSector.copy(
+                                    floorHeight = sectorEditFloorHeight.toIntOrNull()
+                                        ?: throw IllegalArgumentException("La altura del suelo debe ser un número entero."),
+                                    ceilingHeight = sectorEditCeilingHeight.toIntOrNull()
+                                        ?: throw IllegalArgumentException("La altura del techo debe ser un número entero."),
+                                    floorTexture = sectorEditFloorTexture.trim(),
+                                    ceilingTexture = sectorEditCeilingTexture.trim(),
+                                    lightLevel = sectorEditLightLevel.toIntOrNull()
+                                        ?: throw IllegalArgumentException("La iluminación debe ser un número entero."),
+                                    special = sectorEditSpecial.toIntOrNull()
+                                        ?: throw IllegalArgumentException("El especial debe ser un número entero."),
+                                    tag = sectorEditTag.toIntOrNull()
+                                        ?: throw IllegalArgumentException("El tag debe ser un número entero.")
+                                )
+                                WadSectorCodec.encode(updated)
+                                onSaveSector(sectorIndex, updated)
+                                showSectorEditor = false
+                                showSectorDetails = false
+                            } catch (error: Exception) {
+                                sectorEditError = error.localizedMessage
+                                    ?: "Revisa los valores introducidos."
+                            }
+                        }
+                    ) {
+                        Text("Guardar copia")
+                    }
+                }
+            }
+        )
+    }
+
     if (showSectorDetails && selectedSector != null) {
         AlertDialog(
             onDismissRequest = { showSectorDetails = false },
@@ -1953,8 +2112,27 @@ private fun MapPreviewCanvas(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showSectorDetails = false }) {
-                    Text("Cerrar")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            sectorEditFloorHeight = selectedSector.floorHeight.toString()
+                            sectorEditCeilingHeight = selectedSector.ceilingHeight.toString()
+                            sectorEditFloorTexture = selectedSector.floorTexture
+                            sectorEditCeilingTexture = selectedSector.ceilingTexture
+                            sectorEditLightLevel = selectedSector.lightLevel.toString()
+                            sectorEditSpecial = selectedSector.special.toString()
+                            sectorEditTag = selectedSector.tag.toString()
+                            sectorEditError = null
+                            showSectorDetails = false
+                            showSectorEditor = true
+                        },
+                        enabled = !isSavingMap
+                    ) {
+                        Text("Editar")
+                    }
+                    TextButton(onClick = { showSectorDetails = false }) {
+                        Text("Cerrar")
+                    }
                 }
             }
         )
